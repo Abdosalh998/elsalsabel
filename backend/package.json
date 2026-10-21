@@ -1,0 +1,14 @@
+{
+  "name": "samh-backend",
+  "version": "1.0.0",
+  "description": "السلسبيل - Company Management System Backend",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "migrate": "node -e \"require('./src/db/migrations/schema')().then(() => process.exit(0))\""
+  },
+  "keywords": [],
+  "author": "السلسبيل",
+  "license": "ISC"
+}
