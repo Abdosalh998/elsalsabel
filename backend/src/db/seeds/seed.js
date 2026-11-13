@@ -31,19 +31,38 @@ async function runSeeds() {
       ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash;
     `, [branch45Hash, branch45Id]);
 
-    // Seed default payment types for Branch 45
+    // Seed Branch 45 -2
+    const branch45_2Result = await client.query(`
+      INSERT INTO branches (name, code, address, phone)
+      VALUES ('فرع 45 -2', 'BRANCH_45_2', NULL, NULL)
+      ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+      RETURNING id;
+    `);
+    const branch45_2Id = branch45_2Result.rows[0].id;
+
+    // Seed Branch 45 -2 user
+    const branch45_2Hash = await bcrypt.hash('a45n2026-2', 12);
+    await client.query(`
+      INSERT INTO users (username, password_hash, role, branch_id, full_name)
+      VALUES ('admin45-2', $1, 'branch_user', $2, 'مسؤول فرع 45 -2')
+      ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash;
+    `, [branch45_2Hash, branch45_2Id]);
+
+    // Seed default payment types for Branch 45 & Branch 45 -2
     const paymentTypes = [
       { name: 'كاش', channel: 'cash' },
       { name: 'محفظة إلكترونية', channel: 'wallet' },
       { name: 'انستاباي', channel: 'instapay' },
       { name: 'إيداع بنكي', channel: 'bank' }
     ];
-    for (const pt of paymentTypes) {
-      await client.query(`
-        INSERT INTO payment_types (branch_id, name, channel, is_system)
-        VALUES ($1, $2, $3, true)
-        ON CONFLICT (branch_id, name) DO UPDATE SET channel = EXCLUDED.channel;
-      `, [branch45Id, pt.name, pt.channel]);
+    for (const bId of [branch45Id, branch45_2Id]) {
+      for (const pt of paymentTypes) {
+        await client.query(`
+          INSERT INTO payment_types (branch_id, name, channel, is_system)
+          VALUES ($1, $2, $3, true)
+          ON CONFLICT (branch_id, name) DO UPDATE SET channel = EXCLUDED.channel;
+        `, [bId, pt.name, pt.channel]);
+      }
     }
 
     console.log(`✅ Seeds completed. Branch 45 ID: ${branch45Id}`);
