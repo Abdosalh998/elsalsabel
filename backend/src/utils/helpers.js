@@ -2,11 +2,20 @@ const jwt = require('jsonwebtoken');
 
 /**
  * Sends a standardized success response.
+ * Handles both (res, data, statusCode, message) and (res, data, message, statusCode).
  */
 const sendSuccess = (res, data, statusCode = 200, message = 'تمت العملية بنجاح') => {
-  return res.status(statusCode).json({
+  let finalStatus = statusCode;
+  let finalMessage = message;
+
+  if (typeof statusCode === 'string') {
+    finalMessage = statusCode;
+    finalStatus = typeof message === 'number' ? message : 200;
+  }
+
+  return res.status(finalStatus).json({
     success: true,
-    message,
+    message: finalMessage,
     data,
   });
 };

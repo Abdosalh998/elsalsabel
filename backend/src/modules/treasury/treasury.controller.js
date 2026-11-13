@@ -5,16 +5,137 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
  * Helper to get current treasury balance for a branch
  */
 const getCurrentTreasuryBalance = async (branchId) => {
-  // Sum of all Treasury In
+  // Total treasury in (all channels)
   const tRes = await pool.query(`SELECT COALESCE(SUM(amount), 0) as total_in FROM treasury WHERE branch_id = $1`, [branchId]);
   
-  // Sum of all Expenses Out
-  const eRes = await pool.query(`SELECT COALESCE(SUM(amount), 0) as total_exp FROM expenses WHERE branch_id = $1`, [branchId]);
-  
-  // Sum of all Purchases Out (amount paid from treasury)
-  const pRes = await pool.query(`SELECT COALESCE(SUM(treasury_balance), 0) as total_pur FROM purchases WHERE branch_id = $1`, [branchId]);
+  // Treasury in by channel
+  const tChannelRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(CASE WHEN COALESCE(t.channel, pt.channel, 'cash') = 'cash' THEN t.amount ELSE 0 END), 0) AS cash_in,
+      COALESCE(SUM(CASE WHEN COALESCE(t.channel, pt.channel, 'cash') = 'wallet' THEN t.amount ELSE 0 END), 0) AS wallet_in,
+      COALESCE(SUM(CASE WHEN COALESCE(t.channel, pt.channel, 'cash') = 'instapay' THEN t.amount ELSE 0 END), 0) AS instapay_in,
+      COALESCE(SUM(CASE WHEN COALESCE(t.channel, pt.channel, 'cash') = 'bank' THEN t.amount ELSE 0 END), 0) AS bank_in
+    FROM treasury t
+    LEFT JOIN payment_types pt ON pt.id = t.payment_type_id
+    WHERE t.branch_id = $1
+  `, [branchId]);
 
-  return Number(tRes.rows[0].total_in) - Number(eRes.rows[0].total_exp) - Number(pRes.rows[0].total_pur);
+  // Expenses out by channel
+  const eRes = await pool.query(`SELECT COALESCE(SUM(amount), 0) as total_exp FROM expenses WHERE branch_id = $1`, [branchId]);
+  const eChannelRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'cash' THEN amount ELSE 0 END), 0) AS cash_out,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'wallet' THEN amount ELSE 0 END), 0) AS wallet_out,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'instapay' THEN amount ELSE 0 END), 0) AS instapay_out,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'bank' THEN amount ELSE 0 END), 0) AS bank_out
+    FROM expenses WHERE branch_id = $1
+  `, [branchId]);
+
+  // Purchases out by channel  
+  const pRes = await pool.query(`SELECT COALESCE(SUM(treasury_balance), 0) as total_pur FROM purchases WHERE branch_id = $1`, [branchId]);
+  const pChannelRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'cash' THEN treasury_balance ELSE 0 END), 0) AS cash_pur,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'wallet' THEN treasury_balance ELSE 0 END), 0) AS wallet_pur,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'instapay' THEN treasury_balance ELSE 0 END), 0) AS instapay_pur,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'bank' THEN treasury_balance ELSE 0 END), 0) AS bank_pur
+    FROM purchases WHERE branch_id = $1
+  `, [branchId]);
+
+  // Outgoing monetary transfers (pending or completed reduce current available treasury)
+  const trfOutRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(amount), 0) as total_trf_out,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'cash' THEN amount ELSE 0 END), 0) AS cash_trf_out,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'wallet' THEN amount ELSE 0 END), 0) AS wallet_trf_out,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'instapay' THEN amount ELSE 0 END), 0) AS instapay_trf_out,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'bank' THEN amount ELSE 0 END), 0) AS bank_trf_out
+    FROM transfers 
+    WHERE from_branch_id = $1 AND type = 'monetary' AND status IN ('pending', 'completed')
+  `, [branchId]);
+
+  // Incoming completed monetary transfers (add to treasury upon completion)
+  const trfInRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(amount), 0) as total_trf_in,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'cash' THEN amount ELSE 0 END), 0) AS cash_trf_in,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'wallet' THEN amount ELSE 0 END), 0) AS wallet_trf_in,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'instapay' THEN amount ELSE 0 END), 0) AS instapay_trf_in,
+      COALESCE(SUM(CASE WHEN COALESCE(channel, 'cash') = 'bank' THEN amount ELSE 0 END), 0) AS bank_trf_in
+    FROM transfers 
+    WHERE to_branch_id = $1 AND type = 'monetary' AND status = 'completed'
+  `, [branchId]);
+
+  // Custodies collection (inflow to treasury - exclude internal deductions and custody transfers)
+  const custInRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'cash' THEN c.amount ELSE 0 END), 0) AS cash_custody_in,
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'wallet' THEN c.amount ELSE 0 END), 0) AS wallet_custody_in,
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'instapay' THEN c.amount ELSE 0 END), 0) AS instapay_custody_in,
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'bank' THEN c.amount ELSE 0 END), 0) AS bank_custody_in
+    FROM custodies c
+    LEFT JOIN payment_types pt ON pt.id = c.payment_type_id
+    WHERE c.branch_id = $1 AND c.type = 'collection' AND (c.sub_type IS NULL OR c.sub_type NOT IN ('deduction', 'transfer_out', 'transfer_in'))
+  `, [branchId]).catch(() => ({ rows: [{ cash_custody_in: 0, wallet_custody_in: 0, instapay_custody_in: 0, bank_custody_in: 0 }] }));
+
+  // Custodies disbursement (outflow from treasury - exclude custody transfers)
+  const custOutRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'cash' THEN c.amount ELSE 0 END), 0) AS cash_custody_out,
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'wallet' THEN c.amount ELSE 0 END), 0) AS wallet_custody_out,
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'instapay' THEN c.amount ELSE 0 END), 0) AS instapay_custody_out,
+      COALESCE(SUM(CASE WHEN COALESCE(c.channel, pt.channel, 'cash') = 'bank' THEN c.amount ELSE 0 END), 0) AS bank_custody_out
+    FROM custodies c
+    LEFT JOIN payment_types pt ON pt.id = c.payment_type_id
+    WHERE c.branch_id = $1 AND c.type = 'disbursement' AND (c.sub_type IS NULL OR c.sub_type NOT IN ('transfer_in', 'transfer_out', 'deduction'))
+  `, [branchId]).catch(() => ({ rows: [{ cash_custody_out: 0, wallet_custody_out: 0, instapay_custody_out: 0, bank_custody_out: 0 }] }));
+
+  // Channel transfers (transfers between cash, wallet, instapay, bank)
+  const chTrfRes = await pool.query(`
+    SELECT 
+      COALESCE(SUM(CASE WHEN from_channel = 'cash' THEN amount ELSE 0 END), 0) AS cash_trf_out,
+      COALESCE(SUM(CASE WHEN to_channel = 'cash' THEN amount ELSE 0 END), 0) AS cash_trf_in,
+      COALESCE(SUM(CASE WHEN from_channel = 'wallet' THEN amount ELSE 0 END), 0) AS wallet_trf_out,
+      COALESCE(SUM(CASE WHEN to_channel = 'wallet' THEN amount ELSE 0 END), 0) AS wallet_trf_in,
+      COALESCE(SUM(CASE WHEN from_channel = 'instapay' THEN amount ELSE 0 END), 0) AS instapay_trf_out,
+      COALESCE(SUM(CASE WHEN to_channel = 'instapay' THEN amount ELSE 0 END), 0) AS instapay_trf_in,
+      COALESCE(SUM(CASE WHEN from_channel = 'bank' THEN amount ELSE 0 END), 0) AS bank_trf_out,
+      COALESCE(SUM(CASE WHEN to_channel = 'bank' THEN amount ELSE 0 END), 0) AS bank_trf_in
+    FROM treasury_channel_transfers
+    WHERE branch_id = $1
+  `, [branchId]).catch(() => ({ rows: [{}] }));
+
+  const ch = tChannelRes.rows[0];
+  const ec = eChannelRes.rows[0];
+  const pc = pChannelRes.rows[0];
+  const tout = trfOutRes.rows[0];
+  const tin = trfInRes.rows[0];
+  const cin = custInRes.rows[0];
+  const cout = custOutRes.rows[0];
+  const ct = chTrfRes.rows[0] || {};
+
+  const cashBalance = Number(ch.cash_in) + Number(tin.cash_trf_in) + Number(cin.cash_custody_in) + Number(ct.cash_trf_in || 0)
+                    - Number(ec.cash_out) - Number(pc.cash_pur) - Number(tout.cash_trf_out) - Number(cout.cash_custody_out) - Number(ct.cash_trf_out || 0);
+
+  const walletBalance = Number(ch.wallet_in) + Number(tin.wallet_trf_in) + Number(cin.wallet_custody_in) + Number(ct.wallet_trf_in || 0)
+                      - Number(ec.wallet_out) - Number(pc.wallet_pur) - Number(tout.wallet_trf_out) - Number(cout.wallet_custody_out) - Number(ct.wallet_trf_out || 0);
+
+  const instapayBalance = Number(ch.instapay_in) + Number(tin.instapay_trf_in) + Number(cin.instapay_custody_in) + Number(ct.instapay_trf_in || 0)
+                        - Number(ec.instapay_out) - Number(pc.instapay_pur) - Number(tout.instapay_trf_out) - Number(cout.instapay_custody_out) - Number(ct.instapay_trf_out || 0);
+
+  const bankBalance = Number(ch.bank_in) + Number(tin.bank_trf_in) + Number(cin.bank_custody_in) + Number(ct.bank_trf_in || 0)
+                    - Number(ec.bank_out) - Number(pc.bank_pur) - Number(tout.bank_trf_out) - Number(cout.bank_custody_out) - Number(ct.bank_trf_out || 0);
+
+  return {
+    // Total treasury balance is affected strictly by cash (نقدي) per client requirement
+    total: cashBalance,
+    channels: {
+      cash: cashBalance,
+      wallet: walletBalance,
+      instapay: instapayBalance,
+      bank: bankBalance
+    }
+  };
 };
 
 // ─── Payment Types ─────────────────────────────────────────────────────────
@@ -23,7 +144,7 @@ const getPaymentTypes = async (req, res, next) => {
   try {
     const { branch_id } = req.user;
     const result = await pool.query(
-      `SELECT MIN(id) as id, name FROM payment_types WHERE branch_id = $1 AND is_active = true GROUP BY name ORDER BY id ASC`, 
+      `SELECT id, name, channel FROM payment_types WHERE branch_id = $1 AND is_active = true ORDER BY id ASC`, 
       [branch_id]
     );
     return sendSuccess(res, result.rows);
@@ -82,78 +203,81 @@ const getTreasury = async (req, res, next) => {
     const params = [branch_id];
     let paramIndex = 2;
 
+
+    let countQuery = `
+      SELECT COUNT(*) FROM treasury t 
+      LEFT JOIN customers c ON c.id = t.customer_id 
+      LEFT JOIN payment_types p ON p.id = t.payment_type_id
+      WHERE t.branch_id = $1
+    `;
+    const countParams = [branch_id];
+    let countIndex = 2;
+
     if (payment_type_id) {
-      query += ` AND t.payment_type_id = $${paramIndex}`;
-      params.push(payment_type_id);
-      paramIndex++;
+      const ids = payment_type_id.split(',').map(v => v.trim()).filter(Boolean);
+      if (ids.length === 1) {
+        query += ` AND t.payment_type_id = $${paramIndex}`;
+        countQuery += ` AND t.payment_type_id = $${countIndex}`;
+        params.push(ids[0]); countParams.push(ids[0]);
+      } else {
+        query += ` AND t.payment_type_id = ANY($${paramIndex}::int[])`;
+        countQuery += ` AND t.payment_type_id = ANY($${countIndex}::int[])`;
+        params.push(ids.map(Number)); countParams.push(ids.map(Number));
+      }
+      paramIndex++; countIndex++;
     }
 
     if (customer_id) {
-      query += ` AND t.customer_id = $${paramIndex}`;
-      params.push(customer_id);
-      paramIndex++;
+      const ids = customer_id.split(',').map(v => v.trim()).filter(Boolean);
+      if (ids.length === 1) {
+        query += ` AND t.customer_id = $${paramIndex}`;
+        countQuery += ` AND t.customer_id = $${countIndex}`;
+        params.push(ids[0]); countParams.push(ids[0]);
+      } else {
+        query += ` AND t.customer_id = ANY($${paramIndex}::int[])`;
+        countQuery += ` AND t.customer_id = ANY($${countIndex}::int[])`;
+        params.push(ids.map(Number)); countParams.push(ids.map(Number));
+      }
+      paramIndex++; countIndex++;
     }
 
     if (dateFrom && dateTo) {
       query += ` AND t.date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
-      params.push(dateFrom, dateTo);
-      paramIndex += 2;
+      countQuery += ` AND t.date BETWEEN $${countIndex} AND $${countIndex + 1}`;
+      params.push(dateFrom, dateTo); countParams.push(dateFrom, dateTo);
+      paramIndex += 2; countIndex += 2;
     } else if (dateFrom) {
       query += ` AND t.date >= $${paramIndex}`;
-      params.push(dateFrom);
-      paramIndex++;
+      countQuery += ` AND t.date >= $${countIndex}`;
+      params.push(dateFrom); countParams.push(dateFrom);
+      paramIndex++; countIndex++;
     } else if (dateTo) {
       query += ` AND t.date <= $${paramIndex}`;
-      params.push(dateTo);
-      paramIndex++;
+      countQuery += ` AND t.date <= $${countIndex}`;
+      params.push(dateTo); countParams.push(dateTo);
+      paramIndex++; countIndex++;
+    }
+
+    const { channel } = req.query;
+    if (channel) {
+      query += ` AND COALESCE(t.channel, p.channel, 'cash') = $${paramIndex}`;
+      countQuery += ` AND COALESCE(t.channel, p.channel, 'cash') = $${countIndex}`;
+      params.push(channel); countParams.push(channel);
+      paramIndex++; countIndex++;
     }
 
     query += ` ORDER BY t.date DESC, t.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(limit, offset);
 
     const result = await pool.query(query, params);
-    
-    let countQuery = `
-      SELECT COUNT(*) FROM treasury t 
-      LEFT JOIN customers c ON c.id = t.customer_id 
-      LEFT JOIN payment_types p ON p.id = t.payment_type_id
-      WHERE t.branch_id = $1`;
-    const countParams = [branch_id];
-    let countIndex = 2;
-
-    if (payment_type_id) {
-      countQuery += ` AND t.payment_type_id = $${countIndex}`;
-      countParams.push(payment_type_id);
-      countIndex++;
-    }
-
-    if (customer_id) {
-      countQuery += ` AND t.customer_id = $${countIndex}`;
-      countParams.push(customer_id);
-      countIndex++;
-    }
-
-    if (dateFrom && dateTo) {
-      countQuery += ` AND t.date BETWEEN $${countIndex} AND $${countIndex + 1}`;
-      countParams.push(dateFrom, dateTo);
-      countIndex += 2;
-    } else if (dateFrom) {
-      countQuery += ` AND t.date >= $${countIndex}`;
-      countParams.push(dateFrom);
-      countIndex++;
-    } else if (dateTo) {
-      countQuery += ` AND t.date <= $${countIndex}`;
-      countParams.push(dateTo);
-      countIndex++;
-    }
-
     const countResult = await pool.query(countQuery, countParams);
 
-    const currentBalance = await getCurrentTreasuryBalance(branch_id);
+    const balanceData = await getCurrentTreasuryBalance(branch_id);
 
     return sendSuccess(res, {
       treasury: result.rows,
-      currentBalance,
+      currentBalance: balanceData.total,
+      channelBalances: balanceData.channels,
       total: parseInt(countResult.rows[0].count),
       page: parseInt(page),
       limit: parseInt(limit)
@@ -168,7 +292,7 @@ const addTreasury = async (req, res, next) => {
   try {
     await client.query('BEGIN');
     const { branch_id } = req.user;
-    let { date, customer_id, customer_name, customer_phone, saveNewCustomer, payment_type_id, amount, notes = '' } = req.body;
+    let { date, customer_id, customer_name, customer_phone, saveNewCustomer, payment_type_id, amount, notes = '', receipt_image = null } = req.body;
     const applyDebtOffset = req.body.apply_debt_offset === true || req.body.apply_debt_offset === 'true';
 
     if (!date || !amount || !payment_type_id) {
@@ -191,13 +315,13 @@ const addTreasury = async (req, res, next) => {
     // ── Apply debt offset if requested ─────────────────────────────────────
     if (customer_id && applyDebtOffset) {
       const outstandingRes = await client.query(
-        `SELECT cb.id, cb.source_id, cb.invoice_amount, cb.paid_amount, (cb.invoice_amount - cb.paid_amount) as remaining
-         FROM customer_balances cb
-         WHERE cb.customer_id = $1 AND cb.branch_id = $2
-           AND cb.source_type = 'sales'
-           AND (cb.invoice_amount - cb.paid_amount) > 0
-         ORDER BY cb.id ASC
-         FOR UPDATE`,
+        `SELECT cb.id as cb_id, s.id as source_id, s.total as invoice_amount, s.paid_amount, s.remaining_balance as remaining
+         FROM sales s
+         LEFT JOIN customer_balances cb ON cb.source_id = s.id AND cb.source_type = 'sales' AND cb.branch_id = s.branch_id
+         WHERE s.customer_id = $1 AND s.branch_id = $2
+           AND s.remaining_balance > 0
+         ORDER BY s.date ASC, s.id ASC
+         FOR UPDATE OF s`,
         [customer_id, branch_id]
       );
 
@@ -208,13 +332,15 @@ const addTreasury = async (req, res, next) => {
         if (canOffset <= 0) continue;
 
         // Update customer_balances: paid_amount ↑, remaining_balance ↓
-        await client.query(
-          `UPDATE customer_balances
-           SET paid_amount = paid_amount + $1,
-               remaining_balance = GREATEST(0, remaining_balance - $1)
-           WHERE id = $2`,
-          [canOffset, inv.id]
-        );
+        if (inv.cb_id) {
+          await client.query(
+            `UPDATE customer_balances
+             SET paid_amount = paid_amount + $1,
+                 remaining_balance = GREATEST(0, remaining_balance - $1)
+             WHERE id = $2`,
+            [canOffset, inv.cb_id]
+          );
+        }
 
         // Update the sales record itself: paid_amount ↑, remaining_balance ↓
         await client.query(
@@ -237,10 +363,13 @@ const addTreasury = async (req, res, next) => {
       ? `إيداع خزينة (مقاصة دين ${debt_offset.toFixed(2)})${notes ? ' — ' + notes : ''}`
       : `إيداع خزينة${notes ? ': ' + notes : ''}`;
 
+    const ptRes = await client.query(`SELECT channel FROM payment_types WHERE id = $1`, [payment_type_id]);
+    const channel = ptRes.rows[0]?.channel || 'cash';
+
     const result = await client.query(
-      `INSERT INTO treasury (branch_id, date, customer_id, payment_type_id, amount, notes)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [branch_id, date, customer_id || null, payment_type_id, amount, notesText]
+      `INSERT INTO treasury (branch_id, date, customer_id, payment_type_id, amount, notes, channel, receipt_image)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [branch_id, date, customer_id || null, payment_type_id, amount, notesText, channel, receipt_image || null]
     );
 
     const treasuryId = result.rows[0].id;
@@ -296,13 +425,16 @@ const updateTreasury = async (req, res, next) => {
   try {
     const { branch_id } = req.user;
     const { id } = req.params;
-    const { date, customer_id, payment_type_id, amount, notes = '' } = req.body;
+    const { date, customer_id, payment_type_id, amount, notes = '', receipt_image = null } = req.body;
+
+    const ptRes = await pool.query(`SELECT channel FROM payment_types WHERE id = $1`, [payment_type_id]);
+    const channel = ptRes.rows[0]?.channel || 'cash';
 
     const result = await pool.query(
       `UPDATE treasury 
-       SET date = $1, customer_id = $2, payment_type_id = $3, amount = $4, notes = $5, updated_at = NOW()
-       WHERE id = $6 AND branch_id = $7 RETURNING *`,
-      [date, customer_id || null, payment_type_id, amount, notes, id, branch_id]
+       SET date = $1, customer_id = $2, payment_type_id = $3, amount = $4, notes = $5, channel = $6, receipt_image = $7, updated_at = NOW()
+       WHERE id = $8 AND branch_id = $9 RETURNING *`,
+      [date, customer_id || null, payment_type_id, amount, notes, channel, receipt_image || null, id, branch_id]
     );
 
     if (!result.rows[0]) return sendError(res, 'الحركة غير موجودة', 404);
@@ -406,8 +538,173 @@ const deleteTreasury = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/treasury/channel-transfers
+ * Transfer money between payment channels (e.g. Cash -> Instapay, Cash -> Wallet, etc.)
+ */
+const addChannelTransfer = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { branch_id } = req.user;
+    const { from_channel, to_channel, amount, date, notes } = req.body;
+
+    const validChannels = ['cash', 'wallet', 'instapay', 'bank'];
+    if (!validChannels.includes(from_channel)) {
+      return sendError(res, 'قناة التحويل (من) غير صالحة', 400);
+    }
+    if (!validChannels.includes(to_channel)) {
+      return sendError(res, 'قناة التحويل (إلى) غير صالحة', 400);
+    }
+    if (from_channel === to_channel) {
+      return sendError(res, 'لا يمكن التحويل لنفس القناة', 400);
+    }
+
+    const numAmount = parseFloat(amount);
+    if (!numAmount || numAmount <= 0) {
+      return sendError(res, 'يجب إدخال مبلغ صحيح أكبر من الصفر', 400);
+    }
+
+    // Check available balance in from_channel
+    const currentBalances = await getCurrentTreasuryBalance(branch_id);
+    const available = currentBalances.channels[from_channel] || 0;
+    if (available < numAmount) {
+      const channelNamesAr = { cash: 'النقدي (كاش)', wallet: 'المحفظة الإلكترونية', instapay: 'انستاباي', bank: 'البنك' };
+      return sendError(res, `رصيد ${channelNamesAr[from_channel] || from_channel} الحالي (${available.toFixed(2)} ج.م) غير كافٍ لإتمام التحويل`, 400);
+    }
+
+    const trfDate = date || new Date().toISOString().split('T')[0];
+
+    const result = await client.query(
+      `INSERT INTO treasury_channel_transfers (branch_id, date, from_channel, to_channel, amount, notes)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [branch_id, trfDate, from_channel, to_channel, numAmount, notes || '']
+    );
+
+    await client.query('COMMIT');
+
+    const updatedBalances = await getCurrentTreasuryBalance(branch_id);
+
+    return sendSuccess(res, {
+      transfer: result.rows[0],
+      currentBalance: updatedBalances.total,
+      channelBalances: updatedBalances.channels,
+    }, 201, 'تم تحويل المبلغ بين القنوات بنجاح وتحديث الأرصدة');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * GET /api/treasury/channel-transfers
+ * Get history of channel transfers
+ */
+const getChannelTransfers = async (req, res, next) => {
+  try {
+    const { branch_id } = req.user;
+    const { from_channel, to_channel, dateFrom, dateTo, page = 1, limit = 50 } = req.query;
+    const { offset } = paginate(page, limit);
+
+    let whereClause = `WHERE branch_id = $1`;
+    const params = [branch_id];
+    let paramIndex = 2;
+
+    if (from_channel) {
+      whereClause += ` AND from_channel = $${paramIndex}`;
+      params.push(from_channel);
+      paramIndex++;
+    }
+
+    if (to_channel) {
+      whereClause += ` AND to_channel = $${paramIndex}`;
+      params.push(to_channel);
+      paramIndex++;
+    }
+
+    if (dateFrom && dateTo) {
+      whereClause += ` AND date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+      params.push(dateFrom, dateTo);
+      paramIndex += 2;
+    } else if (dateFrom) {
+      whereClause += ` AND date >= $${paramIndex}`;
+      params.push(dateFrom);
+      paramIndex++;
+    } else if (dateTo) {
+      whereClause += ` AND date <= $${paramIndex}`;
+      params.push(dateTo);
+      paramIndex++;
+    }
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*), COALESCE(SUM(amount), 0) AS total_amount FROM treasury_channel_transfers ${whereClause}`,
+      params
+    );
+
+    const total = parseInt(countRes.rows[0].count, 10);
+    const totalAmount = parseFloat(countRes.rows[0].total_amount) || 0;
+
+    const dataParams = [...params, parseInt(limit, 10), offset];
+    const dataRes = await pool.query(
+      `SELECT * FROM treasury_channel_transfers
+       ${whereClause}
+       ORDER BY date DESC, id DESC
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      dataParams
+    );
+
+    return sendSuccess(res, {
+      transfers: dataRes.rows,
+      summary: { total_amount: totalAmount, total_count: total },
+      pagination: {
+        total,
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
+        pages: Math.ceil(total / parseInt(limit, 10)),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * DELETE /api/treasury/channel-transfers/:id
+ * Delete a channel transfer record
+ */
+const deleteChannelTransfer = async (req, res, next) => {
+  try {
+    const { branch_id } = req.user;
+    const { id } = req.params;
+
+    const checkRes = await pool.query(
+      `SELECT * FROM treasury_channel_transfers WHERE id = $1 AND branch_id = $2`,
+      [id, branch_id]
+    );
+
+    if (!checkRes.rows.length) {
+      return sendError(res, 'سجل التحويل غير موجود', 404);
+    }
+
+    await pool.query(`DELETE FROM treasury_channel_transfers WHERE id = $1`, [id]);
+
+    const updatedBalances = await getCurrentTreasuryBalance(branch_id);
+
+    return sendSuccess(res, {
+      currentBalance: updatedBalances.total,
+      channelBalances: updatedBalances.channels,
+    }, 200, 'تم حذف حركة التحويل وإعادة ضبط الأرصدة بنجاح');
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = { 
   getCurrentTreasuryBalance,
   getPaymentTypes, addPaymentType, 
-  getTreasury, addTreasury, updateTreasury, deleteTreasury 
+  getTreasury, addTreasury, updateTreasury, deleteTreasury,
+  addChannelTransfer, getChannelTransfers, deleteChannelTransfer
 };

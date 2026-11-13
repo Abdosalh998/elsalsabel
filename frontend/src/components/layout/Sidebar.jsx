@@ -1,14 +1,20 @@
 import { NavLink } from 'react-router-dom';
-import { 
-  Users, 
-  Wallet, 
-  Package, 
-  ShoppingCart, 
-  Landmark, 
-  Receipt, 
+import {
+  Users,
+  Wallet,
+  Package,
+  ShoppingCart,
+  Landmark,
+  Receipt,
   Truck,
   LayoutDashboard,
-  LogOut
+  LogOut,
+  Zap,
+  FileText,
+  ArrowLeftRight,
+  RotateCcw,
+  Palette,
+  HandCoins
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import './Layout.css';
@@ -19,13 +25,19 @@ const Sidebar = ({ isOpen, toggleSidebar }) => {
 
   const menuItems = [
     { name: 'الرئيسية', path: '/branch', icon: LayoutDashboard, exact: true },
+    { name: 'المتحكم', path: '/branch/pos', icon: Zap, highlight: true },
     { name: 'العملاء', path: '/branch/customers', icon: Users },
     { name: 'أرصدة العملاء', path: '/branch/balances', icon: Wallet },
-    { name: 'المخازن', path: '/branch/inventory', icon: Package },
+    { name: 'المخزن', path: '/branch/inventory', icon: Package },
+    { name: 'المشتريات', path: '/branch/purchases', icon: Truck },
+    { name: 'التلوين', path: '/branch/coloring', icon: Palette },
     { name: 'المبيعات', path: '/branch/sales', icon: ShoppingCart },
+    { name: 'المرتجعات', path: '/branch/returns', icon: RotateCcw },
     { name: 'الخزينة', path: '/branch/treasury', icon: Landmark },
     { name: 'المصروفات', path: '/branch/expenses', icon: Receipt },
-    { name: 'المشتريات', path: '/branch/purchases', icon: Truck },
+    { name: 'العهد', path: '/branch/custody', icon: HandCoins },
+    { name: 'التحويلات', path: '/branch/transfers', icon: ArrowLeftRight },
+    { name: 'التقارير', path: '/branch/reports', icon: FileText },
   ];
 
   return (
@@ -44,7 +56,7 @@ const Sidebar = ({ isOpen, toggleSidebar }) => {
               key={item.path}
               to={item.path}
               end={item.exact}
-              className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+              className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''} ${item.highlight ? 'pos-highlight' : ''}`}
               onClick={() => {
                 if (window.innerWidth <= 768) toggleSidebar();
               }}

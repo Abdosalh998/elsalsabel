@@ -17,6 +17,12 @@ import SalesPage from './pages/branch/SalesPage';
 import TreasuryPage from './pages/branch/TreasuryPage';
 import ExpensesPage from './pages/branch/ExpensesPage';
 import PurchasesPage from './pages/branch/PurchasesPage';
+import POSPage from './pages/branch/POSPage';
+import ReportsPage from './pages/branch/ReportsPage';
+import TransfersPage from './pages/branch/TransfersPage';
+import ReturnsPage from './pages/branch/ReturnsPage';
+import ColoringPage from './pages/branch/ColoringPage';
+import CustodyPage from './pages/branch/CustodyPage';
 import './index.css';
 
 function App() {
@@ -76,9 +82,15 @@ function App() {
             <Route path="balances" element={<BalancesPage />} />
             <Route path="inventory" element={<InventoryPage />} />
             <Route path="sales" element={<SalesPage />} />
+            <Route path="returns" element={<ReturnsPage />} />
             <Route path="treasury" element={<TreasuryPage />} />
             <Route path="expenses" element={<ExpensesPage />} />
+            <Route path="custody" element={<CustodyPage />} />
             <Route path="purchases" element={<PurchasesPage />} />
+            <Route path="coloring" element={<ColoringPage />} />
+            <Route path="pos" element={<POSPage />} />
+            <Route path="reports" element={<ReportsPage />} />
+            <Route path="transfers" element={<TransfersPage />} />
           </Route>
 
 

@@ -28,8 +28,8 @@ router.get('/stats', authenticate, async (req, res, next) => {
       // Total inventory items & available weight
       pool.query(`
         SELECT COUNT(*) as items_count,
-               COALESCE(SUM(available_quantity), 0) as total_available,
-               COALESCE(SUM(total), 0) as total_value
+               COALESCE(SUM(available_quantity), 0) as total_available_weight,
+               COALESCE(SUM(count), 0) as total_rolls
         FROM inventory WHERE branch_id = $1
       `, [branch_id]),
 
@@ -92,9 +92,9 @@ router.get('/stats', authenticate, async (req, res, next) => {
     return sendSuccess(res, {
       customers:   { count: parseInt(customersRes.rows[0].count) },
       inventory:   {
-        items_count:     parseInt(inventoryRes.rows[0].items_count),
-        total_available: parseFloat(inventoryRes.rows[0].total_available),
-        total_value:     parseFloat(inventoryRes.rows[0].total_value)
+        items_count:            parseInt(inventoryRes.rows[0].items_count),
+        total_available_weight: parseFloat(inventoryRes.rows[0].total_available_weight),
+        total_rolls:            parseInt(inventoryRes.rows[0].total_rolls)
       },
       sales: {
         invoices_count:  parseInt(salesRes.rows[0].invoices_count),

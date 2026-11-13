@@ -29,5 +29,22 @@ export const treasuryService = {
   addPaymentType: async (name) => {
     const { data } = await api.post('/treasury/payment-types', { name });
     return data;
+  },
+
+  addChannelTransfer: async (transferData) => {
+    const { data } = await api.post('/treasury/channel-transfers', transferData);
+    return data;
+  },
+
+  getChannelTransfers: async (params) => {
+    const { data } = await api.get('/treasury/channel-transfers', { params });
+    return data;
+  },
+
+  deleteChannelTransfer: async (id) => {
+    const { data } = await api.delete(`/treasury/channel-transfers/${id}`);
+    return data;
   }
 };
+
+export default treasuryService;

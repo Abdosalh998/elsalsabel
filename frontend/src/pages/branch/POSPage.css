@@ -1,0 +1,280 @@
+/* ═════════════════════════════════════════════════════════════════
+   POS Page (المتحكم الرئيسي) — Comprehensive Responsive Styles
+═════════════════════════════════════════════════════════════════ */
+
+.pos-root {
+  min-height: 100%;
+  background: #f4f6f9;
+  font-family: 'Cairo', 'Segoe UI', sans-serif;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Header */
+.pos-header {
+  background: linear-gradient(135deg, #1A3A5C 0%, #234E7A 60%, #1A3A5C 100%);
+  padding: 20px 20px 0;
+  border-bottom: 3px solid #C9A84C;
+  box-shadow: 0 4px 20px rgba(15, 35, 64, 0.2);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.pos-header-inner {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.pos-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pos-header-title-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pos-header-date-box {
+  text-align: left;
+}
+
+/* Tab Switcher - Horizontal scroll on mobile */
+.pos-tabs-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.pos-tabs-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.pos-tab-button {
+  flex: 1 1 0;
+  min-width: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 12px 10px;
+  border: none;
+  border-radius: 10px 10px 0 0;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 700;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Main Grid Layout */
+.pos-content-grid {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 20px;
+  align-items: start;
+  box-sizing: border-box;
+}
+
+/* Form Panel */
+.pos-form-container {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(15, 35, 64, 0.08);
+  overflow: hidden;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.pos-form-header {
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pos-form-content {
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+/* Activity Panel */
+.pos-sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/* Form Sub-Grids */
+.pos-grid-date-customer {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+  align-items: start;
+}
+
+.pos-grid-2-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pos-grid-3-col {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.pos-grid-3-equal {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.pos-grid-exp-desc {
+  display: grid;
+  grid-template-columns: 1fr 120px;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+/* Scrollable Tables for items */
+.pos-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.pos-sale-items-table {
+  min-width: 480px;
+}
+
+.pos-sale-items-row {
+  display: grid;
+  grid-template-columns: 1fr 90px 70px 90px 32px;
+  gap: 8px;
+  align-items: center;
+}
+
+.pos-returns-table {
+  min-width: 540px;
+}
+
+.pos-returns-row {
+  display: grid;
+  grid-template-columns: 1.2fr 85px 75px 85px 95px 32px;
+  gap: 8px;
+  align-items: center;
+}
+
+.pos-expense-items-table {
+  min-width: 400px;
+}
+
+.pos-expense-items-row {
+  display: grid;
+  grid-template-columns: 1fr 100px 32px;
+  gap: 0;
+  align-items: center;
+}
+
+/* ─── Tablet & Mobile Responsive Breakpoints ───────────────────── */
+
+@media (max-width: 900px) {
+  .pos-content-grid {
+    grid-template-columns: 1fr !important; /* Single column on tablet & mobile */
+    gap: 18px;
+    padding: 16px 12px;
+  }
+
+  .pos-form-container {
+    order: 1 !important; /* Form ALWAYS comes FIRST */
+  }
+
+  .pos-sidebar-panel {
+    order: 2 !important; /* Activity panel stacks BELOW the form */
+  }
+
+  .pos-tab-button {
+    min-width: 115px;
+    font-size: 0.85rem;
+    padding: 10px 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .pos-header {
+    padding: 14px 12px 0;
+  }
+
+  .pos-header-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .pos-header-date-box {
+    text-align: right;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .pos-tab-button {
+    min-width: 105px;
+    font-size: 0.8rem;
+    gap: 5px;
+    padding: 9px 8px;
+  }
+
+  .pos-form-content {
+    padding: 14px 10px;
+  }
+
+  /* Collapse multi-column inputs to 1 column on phones */
+  .pos-grid-date-customer,
+  .pos-grid-2-col,
+  .pos-grid-3-col,
+  .pos-grid-3-equal,
+  .pos-grid-exp-desc {
+    grid-template-columns: 1fr !important;
+    gap: 10px;
+  }
+}
+
+@media (max-width: 420px) {
+  .pos-content-grid {
+    padding: 10px 6px;
+  }
+
+  .pos-tab-button {
+    min-width: 95px;
+    font-size: 0.76rem;
+    padding: 8px 6px;
+  }
+}
+

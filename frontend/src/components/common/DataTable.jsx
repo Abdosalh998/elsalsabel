@@ -1,5 +1,5 @@
-import { useState, useRef, Fragment } from 'react';
-import { Plus, FileDown, FileText, Printer, SlidersHorizontal, X } from 'lucide-react';
+import { useState, useRef, Fragment, useEffect, useCallback } from 'react';
+import { Plus, FileDown, FileText, Printer, SlidersHorizontal, X, ChevronDown, Check } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
@@ -7,40 +7,163 @@ import { format } from 'date-fns';
 import './DataTable.css';
 
 /**
+ * MultiSelectFilter — dropdown with checkboxes for multiple selection
+ */
+const MultiSelectFilter = ({ options = [], value = [], onChange, placeholder = '-- الكل --' }) => {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const ref = useRef(null);
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const filtered = options.filter(o =>
+    o.label.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const toggle = (val) => {
+    if (value.includes(val)) {
+      onChange(value.filter(v => v !== val));
+    } else {
+      onChange([...value, val]);
+    }
+  };
+
+  const toggleAll = () => {
+    if (value.length === options.length) {
+      onChange([]);
+    } else {
+      onChange(options.map(o => o.value));
+    }
+  };
+
+  const selectedLabels = options
+    .filter(o => value.includes(o.value))
+    .map(o => o.label);
+
+  return (
+    <div className="ms-wrapper" ref={ref}>
+      <button
+        type="button"
+        className={`ms-trigger ${open ? 'open' : ''} ${value.length > 0 ? 'has-value' : ''}`}
+        onClick={() => setOpen(v => !v)}
+      >
+        <span className="ms-trigger-text">
+          {value.length === 0
+            ? placeholder
+            : value.length === 1
+              ? selectedLabels[0]
+              : `${value.length} مختار`}
+        </span>
+        {value.length > 0 && (
+          <span
+            className="ms-clear-btn"
+            onClick={e => { e.stopPropagation(); onChange([]); }}
+            title="مسح الاختيار"
+          >
+            <X size={12} />
+          </span>
+        )}
+        <ChevronDown size={14} className={`ms-chevron ${open ? 'rotated' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="ms-dropdown">
+          {options.length > 5 && (
+            <div className="ms-search-wrap">
+              <input
+                type="text"
+                className="ms-search"
+                placeholder="بحث..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                onClick={e => e.stopPropagation()}
+                autoFocus
+              />
+            </div>
+          )}
+          <div className="ms-options">
+            {filtered.length > 1 && (
+              <label className="ms-option ms-select-all" onClick={toggleAll}>
+                <span className={`ms-checkbox ${value.length === options.length ? 'checked' : value.length > 0 ? 'partial' : ''}`}>
+                  {value.length === options.length ? <Check size={10} /> : null}
+                </span>
+                <span className="ms-option-label">
+                  {value.length === options.length ? 'إلغاء الكل' : 'تحديد الكل'}
+                </span>
+              </label>
+            )}
+            <div className="ms-divider" />
+            {filtered.length === 0 ? (
+              <div className="ms-empty">لا توجد نتائج</div>
+            ) : (
+              filtered.map(opt => (
+                <label key={opt.value} className="ms-option" onClick={() => toggle(opt.value)}>
+                  <span className={`ms-checkbox ${value.includes(opt.value) ? 'checked' : ''}`}>
+                    {value.includes(opt.value) ? <Check size={10} /> : null}
+                  </span>
+                  <span className="ms-option-label">{opt.label}</span>
+                </label>
+              ))
+            )}
+          </div>
+          {value.length > 0 && (
+            <div className="ms-footer">
+              <span className="ms-count">{value.length} مختار</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
  * DataTable with server-side filter support.
  *
  * filterConfig: Array of filter definitions:
- *   { key: string, label: string, type: 'select' | 'date', options?: [{label, value}] }
+ *   { key, label, type: 'select' | 'multi-select' | 'date-range' | 'text', options?, placeholder? }
  *
  * onFilter: (filtersObj) => void  — called when user applies or clears filters
+ * For multi-select, the value sent is a comma-separated string of selected values.
  */
 const DataTable = ({
   title,
   columns,
   data,
   loading,
-  onFilter,          // replaces onSearch — receives { key: value, ... }
+  onFilter,
   onAdd,
   actions,
-  filterConfig = [], // array of filter definitions
+  filterConfig = [],
   hideExport = false,
   renderExpandedRow
 }) => {
-  const initialFilters = () => {
+  const initialFilters = useCallback(() => {
     const init = {};
     filterConfig.forEach(f => {
-      init[f.key] = f.type === 'date-range' ? { from: '', to: '' } : '';
+      if (f.type === 'date-range') init[f.key] = { from: '', to: '' };
+      else if (f.type === 'multi-select') init[f.key] = [];
+      else init[f.key] = '';
     });
     return init;
-  };
+  }, [filterConfig]);
 
   const [filters, setFilters] = useState(initialFilters);
   const [filtersVisible, setFiltersVisible] = useState(true);
 
   // Count active filters
-  const activeCount = Object.entries(filters).filter(([, v]) =>
-    typeof v === 'object' ? v.from || v.to : v !== ''
-  ).length;
+  const activeCount = Object.entries(filters).filter(([, v]) => {
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === 'object') return v.from || v.to;
+    return v !== '';
+  }).length;
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
@@ -61,10 +184,13 @@ const DataTable = ({
   };
 
   // Build flat params object for API call
+  // multi-select → sends comma-separated string if multiple, or single value if one
   const buildParams = () => {
     const params = {};
     Object.entries(filters).forEach(([key, value]) => {
-      if (typeof value === 'object') {
+      if (Array.isArray(value)) {
+        if (value.length > 0) params[key] = value.join(',');
+      } else if (typeof value === 'object') {
         if (value.from) params[`${key}From`] = value.from;
         if (value.to) params[`${key}To`] = value.to;
       } else if (value !== '') {
@@ -103,7 +229,6 @@ const DataTable = ({
       worksheet['!dir'] = 'rtl';
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
-      
       const filename = `Export_Excel_${format(new Date(), 'yyyyMMdd_HHmmss')}.xlsx`;
       XLSX.writeFile(workbook, filename);
     } catch (err) {
@@ -163,7 +288,6 @@ const DataTable = ({
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [canvas.width / 2, canvas.height / 2] });
       pdf.addImage(imgData, 'PNG', 0, 0, canvas.width / 2, canvas.height / 2);
-      
       const filename = `Export_PDF_${format(new Date(), 'yyyyMMdd_HHmmss')}.pdf`;
       pdf.save(filename);
     } catch (err) {
@@ -221,6 +345,7 @@ const DataTable = ({
               <div key={f.key} className="filter-item">
                 <label className="filter-label">{f.label}</label>
 
+                {/* ── Single Select ── */}
                 {f.type === 'select' && (
                   <select
                     className="form-select filter-select"
@@ -234,6 +359,17 @@ const DataTable = ({
                   </select>
                 )}
 
+                {/* ── Multi Select ── */}
+                {f.type === 'multi-select' && (
+                  <MultiSelectFilter
+                    options={f.options || []}
+                    value={filters[f.key] || []}
+                    onChange={val => handleFilterChange(f.key, val)}
+                    placeholder={f.placeholder || '-- الكل --'}
+                  />
+                )}
+
+                {/* ── Date Range ── */}
                 {f.type === 'date-range' && (
                   <div className="date-range-wrapper">
                     <div className="date-range-field">
@@ -258,6 +394,7 @@ const DataTable = ({
                   </div>
                 )}
 
+                {/* ── Text ── */}
                 {f.type === 'text' && (
                   <input
                     type="text"
@@ -329,6 +466,43 @@ const DataTable = ({
               ))
             )}
           </tbody>
+          {!loading && data.length > 0 && columns.some(c => c.sum || c.summary) && (
+            <tfoot className="datatable-tfoot">
+              <tr>
+                {columns.map((col, colIndex) => {
+                  let content = null;
+                  if (col.summary) {
+                    content = col.summary(data);
+                  } else if (col.sum) {
+                    const total = data.reduce((acc, row) => {
+                      const raw = row[col.key];
+                      const val = Number(raw !== undefined && raw !== null ? raw : 0);
+                      return acc + (isNaN(val) ? 0 : val);
+                    }, 0);
+                    content = col.renderSummary
+                      ? col.renderSummary(total, data)
+                      : (
+                        <span className="tfoot-sum-val">
+                          {total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 3 })}
+                        </span>
+                      );
+                  } else if (colIndex === 0) {
+                    content = (
+                      <span className="summary-title-badge">
+                        الإجمالي ({data.length})
+                      </span>
+                    );
+                  }
+                  return (
+                    <td key={colIndex} className={col.sum || col.summary ? 'tfoot-sum-cell' : ''}>
+                      {content}
+                    </td>
+                  );
+                })}
+                {actions && <td className="hide-print"></td>}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 

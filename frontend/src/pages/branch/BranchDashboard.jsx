@@ -121,9 +121,9 @@ const BranchDashboard = () => {
           onClick={() => navigate('/branch/purchases')}
         />
         <StatCard
-          title="قيمة المخزن الكلية"
-          value={`${fmt(stats?.inventory?.total_value)} ج.م`}
-          sub={`متاح: ${Number(stats?.inventory?.total_available ?? 0).toFixed(3)} طن/وحدة`}
+          title="إجمالي وزن المخزن المتاح"
+          value={`${Number(stats?.inventory?.total_available_weight ?? 0).toFixed(2)} كج`}
+          sub={`${stats?.inventory?.items_count ?? 0} صنف — ${stats?.inventory?.total_rolls ?? 0} لفة`}
           icon={BarChart2}
           color="#059669"
           onClick={() => navigate('/branch/inventory')}

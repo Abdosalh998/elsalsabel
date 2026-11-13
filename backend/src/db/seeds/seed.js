@@ -32,13 +32,18 @@ async function runSeeds() {
     `, [branch45Hash, branch45Id]);
 
     // Seed default payment types for Branch 45
-    const paymentTypes = ['كاش', 'انستاباي', 'فودافون كاش', 'مشتريات'];
-    for (const typeName of paymentTypes) {
+    const paymentTypes = [
+      { name: 'كاش', channel: 'cash' },
+      { name: 'محفظة إلكترونية', channel: 'wallet' },
+      { name: 'انستاباي', channel: 'instapay' },
+      { name: 'إيداع بنكي', channel: 'bank' }
+    ];
+    for (const pt of paymentTypes) {
       await client.query(`
-        INSERT INTO payment_types (branch_id, name, is_system)
-        VALUES ($1, $2, true)
-        ON CONFLICT DO NOTHING;
-      `, [branch45Id, typeName]);
+        INSERT INTO payment_types (branch_id, name, channel, is_system)
+        VALUES ($1, $2, $3, true)
+        ON CONFLICT (branch_id, name) DO UPDATE SET channel = EXCLUDED.channel;
+      `, [branch45Id, pt.name, pt.channel]);
     }
 
     console.log(`✅ Seeds completed. Branch 45 ID: ${branch45Id}`);

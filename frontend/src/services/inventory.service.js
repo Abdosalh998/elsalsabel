@@ -24,5 +24,15 @@ export const inventoryService = {
   getUniqueValues: async () => {
     const { data } = await api.get('/inventory/unique');
     return data;
+  },
+
+  getInventorySupplies: async (params) => {
+    const { data } = await api.get('/inventory/supplies', { params });
+    return data;
+  },
+
+  getGroupedInventory: async () => {
+    const { data } = await api.get('/inventory/grouped');
+    return data;
   }
 };

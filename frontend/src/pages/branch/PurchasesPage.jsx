@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Edit, Trash2, AlertTriangle, PackagePlus, CheckCircle2 } from 'lucide-react';
+import { Edit, Trash2, AlertTriangle, PackagePlus, CheckCircle2, Printer, Landmark, Eye, X, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import { purchasesService } from '../../services/purchases.service';
@@ -7,6 +7,8 @@ import { customerService } from '../../services/customer.service';
 import DataTable from '../../components/common/DataTable';
 import Modal from '../../components/common/Modal';
 import ConfirmModal from '../../components/common/ConfirmModal';
+import PrintablePurchaseInvoice from '../../components/purchases/PrintablePurchaseInvoice';
+import PartyPicker from '../../components/common/PartyPicker';
 
 const PurchasesPage = () => {
   const [purchases, setPurchases] = useState([]);
@@ -25,18 +27,23 @@ const PurchasesPage = () => {
   // Transfer to Inventory Modal States
   const [transferModalOpen, setTransferModalOpen] = useState(false);
   const [itemToTransfer, setItemToTransfer] = useState(null);
-  const [transferData, setTransferData] = useState({
-    company: '',
-    count: '',
-    roll_price: '',
-    weight_quantity: ''
-  });
   const [isTransferring, setIsTransferring] = useState(false);
 
   // Debt Offset Modal
   const [debtModalOpen, setDebtModalOpen] = useState(false);
   const [debtInfo, setDebtInfo] = useState({ invoices: [], total_debt: 0 });
   const [pendingPayload, setPendingPayload] = useState(null);
+
+  // Print Invoice Modal
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [selectedPurchaseForPrint, setSelectedPurchaseForPrint] = useState(null);
+
+  // Bank Receipt Modal
+  const [selectedReceiptModal, setSelectedReceiptModal] = useState(null);
+  // Scale Ticket Modal
+  const [scaleTicketModal, setScaleTicketModal] = useState(null);
+  // Purchase / Material Image Modal
+  const [selectedImageModal, setSelectedImageModal] = useState(null);
   
   const [formData, setFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
@@ -46,15 +53,20 @@ const PurchasesPage = () => {
     isNewCustomer: false,
     saveNewCustomer: true,
     product: '',
+    material_type: 'section',
     quantity: '',
     discount: '0',
     total: '',
     notes: '',
+    channel: 'cash',
+    receipt_image: null,
+    image_url: null,
+    scale_ticket_image: null,
     add_to_inventory: false,
     inventory_company: '',
     inventory_count: '',
     inventory_roll_price: '',
-    inventory_weight: ''
+    inventory_weight: '',
   });
 
   const fetchData = useCallback(async (params = {}) => {
@@ -97,15 +109,20 @@ const PurchasesPage = () => {
         isNewCustomer: false,
         saveNewCustomer: true,
         product: item.product,
+        material_type: item.material_type || 'section',
         quantity: item.quantity,
         discount: item.discount,
         total: item.total,
         notes: item.notes || '',
+        channel: item.channel || 'cash',
+        receipt_image: item.receipt_image || null,
+        image_url: item.image_url || null,
         add_to_inventory: false,
         inventory_company: '',
         inventory_count: '',
         inventory_roll_price: '',
-        inventory_weight: ''
+        inventory_weight: '',
+        scale_ticket_image: item.scale_ticket_image || null,
       });
     } else {
       setEditingItem(null);
@@ -117,45 +134,48 @@ const PurchasesPage = () => {
         isNewCustomer: false,
         saveNewCustomer: true,
         product: '',
+        material_type: 'section',
         quantity: '',
         discount: '0',
         total: '',
         notes: '',
+        channel: 'cash',
+        receipt_image: null,
+        image_url: null,
         add_to_inventory: false,
         inventory_company: '',
         inventory_count: '',
         inventory_roll_price: '',
-        inventory_weight: ''
+        inventory_weight: '',
+        scale_ticket_image: null,
       });
     }
     setIsModalOpen(true);
   };
 
+  const handlePartyChange = (partyData) => {
+    setFormData(prev => ({
+      ...prev,
+      customer_id: partyData.customer_id,
+      customer_name: partyData.customer_name,
+      phone: partyData.phone,
+      isNewCustomer: partyData.isNewCustomer,
+      saveNewCustomer: partyData.saveNewCustomer
+    }));
+  };
+
   const handleOpenTransferModal = (purchase) => {
     setItemToTransfer(purchase);
-    const qty = Number(purchase.quantity_after_discount || purchase.quantity || 0);
-    setTransferData({
-      company: '',
-      count: '',
-      roll_price: '',
-      weight_quantity: qty > 0 ? qty : ''
-    });
     setTransferModalOpen(true);
   };
 
   const handleExecuteTransfer = async (e) => {
     e.preventDefault();
     if (!itemToTransfer) return;
-    if (!transferData.count || Number(transferData.count) <= 0) {
-      return toast.error('يرجى تحديد عدد اللفات للمخزن');
-    }
-    if (!transferData.roll_price || Number(transferData.roll_price) < 0) {
-      return toast.error('يرجى تحديد سعر بيع اللفة للمخزن');
-    }
 
     setIsTransferring(true);
     try {
-      await purchasesService.transferToInventory(itemToTransfer.id, transferData);
+      await purchasesService.transferToInventory(itemToTransfer.id);
       toast.success('تم ترحيل الصنف إلى المخزن بنجاح 📦');
       setTransferModalOpen(false);
       setItemToTransfer(null);
@@ -197,7 +217,7 @@ const PurchasesPage = () => {
 
     if (formData.isNewCustomer && !formData.customer_name.trim()) return toast.error('يرجى إدخال اسم المورد');
 
-    if (formData.add_to_inventory) {
+    if (formData.add_to_inventory && formData.material_type !== 'scrap') {
       if (!formData.inventory_count || Number(formData.inventory_count) <= 0) {
         return toast.error('يرجى تحديد عدد اللفات للمخزن');
       }
@@ -257,12 +277,139 @@ const PurchasesPage = () => {
     { key: 'date', label: 'التاريخ', render: (row) => format(new Date(row.date), 'yyyy/MM/dd') },
     { key: 'customer_name', label: 'المورد/العميل' },
     { key: 'product', label: 'الصنف/المنتج' },
-    { key: 'quantity', label: 'الكمية', render: (row) => Number(row.quantity).toFixed(2) },
-    { key: 'discount', label: 'الخصم', render: (row) => Number(row.discount).toFixed(2) },
-    { key: 'quantity_after_discount', label: 'الصافي', render: (row) => Number(row.quantity_after_discount).toFixed(2) },
-    { key: 'total', label: 'الإجمالي (الفاتورة)', render: (row) => <span style={{ fontWeight: 'bold' }}>{Number(row.total).toFixed(2)}</span> },
-    { key: 'credit_used', label: 'خصم من الرصيد', render: (row) => <span style={{ color: 'var(--success)' }}>{Number(row.credit_used).toFixed(2)}</span> },
-    { key: 'treasury_balance', label: 'مدفوع من الخزينة', render: (row) => <span style={{ color: 'var(--danger)' }}>{Number(row.treasury_balance).toFixed(2)}</span> },
+    {
+      key: 'material_type',
+      label: 'النوع',
+      render: (row) => {
+        const type = row.material_type || 'section';
+        const config = {
+          scrap: { label: 'سكراب', bg: '#fef3c7', color: '#92400e' },
+          section: { label: 'قطاع', bg: '#eff6ff', color: '#1e40af' },
+          other: { label: 'أخرى', bg: '#f1f5f9', color: '#475569' }
+        };
+        const c = config[type] || config.section;
+        return (
+          <span style={{
+            display: 'inline-block', padding: '2px 8px', borderRadius: 6,
+            fontSize: '0.78rem', fontWeight: 700, background: c.bg, color: c.color
+          }}>
+            {c.label}
+          </span>
+        );
+      }
+    },
+    {
+      key: 'quantity',
+      label: 'الكمية',
+      sum: true,
+      renderSummary: (t) => t.toFixed(2),
+      render: (row) => Number(row.quantity).toFixed(2)
+    },
+    {
+      key: 'discount',
+      label: 'الخصم',
+      sum: true,
+      renderSummary: (t) => t.toFixed(2),
+      render: (row) => Number(row.discount).toFixed(2)
+    },
+    {
+      key: 'quantity_after_discount',
+      label: 'الصافي',
+      sum: true,
+      renderSummary: (t) => t.toFixed(2),
+      render: (row) => Number(row.quantity_after_discount).toFixed(2)
+    },
+    {
+      key: 'total',
+      label: 'الإجمالي (الفاتورة)',
+      sum: true,
+      renderSummary: (t) => `${t.toFixed(2)} ج.م`,
+      render: (row) => <span style={{ fontWeight: 'bold' }}>{Number(row.total).toFixed(2)}</span>
+    },
+    {
+      key: 'credit_used',
+      label: 'خصم من الرصيد',
+      sum: true,
+      renderSummary: (t) => <span style={{ color: 'var(--success)' }}>{t.toFixed(2)} ج.م</span>,
+      render: (row) => <span style={{ color: 'var(--success)' }}>{Number(row.credit_used).toFixed(2)}</span>
+    },
+    {
+      key: 'treasury_balance',
+      label: 'مدفوع من الخزينة',
+      sum: true,
+      renderSummary: (t) => <span style={{ color: 'var(--danger)' }}>{t.toFixed(2)} ج.م</span>,
+      render: (row) => <span style={{ color: 'var(--danger)' }}>{Number(row.treasury_balance).toFixed(2)}</span>
+    },
+    {
+      key: 'channel',
+      label: 'طريقة الدفع',
+      render: (row) => {
+        const ch = row.channel || 'cash';
+        const labels = { cash: 'نقدي (كاش)', wallet: 'محفظة', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+        return (
+          <span style={{
+            display: 'inline-block', background: 'rgba(37, 99, 235, 0.08)', color: '#1d4ed8',
+            padding: '2px 7px', borderRadius: 5, fontSize: '0.78rem', fontWeight: 600
+          }}>
+            {labels[ch] || ch}
+          </span>
+        );
+      }
+    },
+    {
+      key: 'receipt_image',
+      label: 'إيصال البنك',
+      render: (row) => row.receipt_image ? (
+        <button
+          type="button"
+          onClick={() => setSelectedReceiptModal(row.receipt_image)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a',
+            borderRadius: 6, padding: '3px 8px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 700
+          }}
+          title="عرض صورة الإيصال البنكي"
+        >
+          <Eye size={13} /> عرض الإيصال
+        </button>
+      ) : '—'
+    },
+    {
+      key: 'scale_ticket_image',
+      label: 'كارتة الميزان',
+      render: (row) => row.scale_ticket_image ? (
+        <button
+          type="button"
+          onClick={() => setScaleTicketModal(row.scale_ticket_image)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0',
+            borderRadius: 6, padding: '3px 8px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 700
+          }}
+          title="عرض كارتة الميزان"
+        >
+          <Eye size={13} /> عرض الكارتة
+        </button>
+      ) : '—'
+    },
+    {
+      key: 'image_url',
+      label: 'صورة الشراء',
+      render: (row) => row.image_url ? (
+        <button
+          type="button"
+          onClick={() => setSelectedImageModal(row.image_url)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe',
+            borderRadius: 6, padding: '3px 8px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 700
+          }}
+          title="عرض صورة البضاعة / الشراء"
+        >
+          <Eye size={13} /> عرض الصورة
+        </button>
+      ) : '—'
+    },
     {
       key: 'transferred_to_inventory',
       label: 'المخزن',
@@ -305,6 +452,14 @@ const PurchasesPage = () => {
           <PackagePlus size={16} />
         </button>
       )}
+      <button
+        className="btn btn-icon btn-ghost"
+        onClick={() => { setSelectedPurchaseForPrint(row); setIsPrintModalOpen(true); }}
+        title="طباعة الفاتورة"
+        style={{ color: '#0284c7' }}
+      >
+        <Printer size={16} />
+      </button>
       <button className="btn btn-icon btn-ghost" onClick={() => handleOpenModal(row)} title="تعديل">
         <Edit size={16} />
       </button>
@@ -318,14 +473,24 @@ const PurchasesPage = () => {
     {
       key: 'customer_id',
       label: 'المورد',
-      type: 'select',
+      type: 'multi-select',
       options: customers.map(c => ({ label: c.name, value: c.id }))
     },
     {
       key: 'product',
       label: 'المنتج',
-      type: 'select',
+      type: 'multi-select',
       options: uniqueValues.products.map(p => ({ label: p, value: p }))
+    },
+    {
+      key: 'material_type',
+      label: 'نوع الخامة',
+      type: 'multi-select',
+      options: [
+        { label: 'قطاع', value: 'section' },
+        { label: 'سكراب', value: 'scrap' },
+        { label: 'أخرى', value: 'other' }
+      ]
     },
     {
       key: 'date',
@@ -362,47 +527,48 @@ const PurchasesPage = () => {
             <input type="date" className="form-input" value={formData.date} onChange={(e) => setFormData({ ...formData, date: e.target.value })} />
           </div>
 
-          {!editingItem && (
-            <div className="form-group" style={{ flexDirection: 'row', alignItems: 'center', gap: '8px' }}>
-              <input type="checkbox" id="newSupplier" checked={formData.isNewCustomer} onChange={(e) => setFormData({ ...formData, isNewCustomer: e.target.checked, customer_id: '', customer_name: '' })} />
-              <label htmlFor="newSupplier" className="form-label" style={{ margin: 0 }}>مورد جديد؟</label>
-            </div>
-          )}
+          {/* Supplier Selection with PartyPicker */}
+          <PartyPicker
+            type="supplier"
+            customers={customers}
+            value={{
+              customer_id: formData.customer_id,
+              customer_name: formData.customer_name,
+              phone: formData.phone,
+              isNewCustomer: formData.isNewCustomer,
+              saveNewCustomer: formData.saveNewCustomer
+            }}
+            onChange={handlePartyChange}
+            disabled={!!editingItem}
+            required={false}
+            allowNone={true}
+          />
 
-          {formData.isNewCustomer && !editingItem ? (
-            <div className="form-group">
-              <label className="form-label">اسم المورد الجديد *</label>
-              <input type="text" className="form-input" placeholder="أدخل اسم المورد" value={formData.customer_name} onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })} />
-              <input type="tel" className="form-input" style={{ marginTop: '8px' }} placeholder="رقم الهاتف (اختياري)" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} />
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
-                <input
-                  type="checkbox"
-                  id="saveNewSupplier"
-                  checked={formData.saveNewCustomer}
-                  onChange={(e) => setFormData({ ...formData, saveNewCustomer: e.target.checked })}
-                />
-                <label htmlFor="saveNewSupplier" className="form-label" style={{ margin: 0, cursor: 'pointer', fontSize: '0.85rem' }}>حفظ المورد في سجل العملاء</label>
-              </div>
+          <div style={{ display: 'flex', gap: '16px' }}>
+            <div className="form-group" style={{ flex: 2 }}>
+              <label className="form-label">الصنف / المنتج *</label>
+              <input type="text" className="form-input" value={formData.product} onChange={(e) => setFormData({ ...formData, product: e.target.value })} placeholder="مثال: قطاع فضي، سكراب خردة..." required />
             </div>
-          ) : (
-            <div className="form-group">
-              <label className="form-label">اختر المورد (اختياري)</label>
-              <select className="form-select" value={formData.customer_id} onChange={(e) => setFormData({ ...formData, customer_id: e.target.value })} disabled={!!editingItem}>
-                <option value="">-- بدون مورد --</option>
-                {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <div className="form-group" style={{ flex: 1 }}>
+              <label className="form-label">نوع الخامة</label>
+              <select
+                className="form-select"
+                value={formData.material_type}
+                onChange={(e) => setFormData({ ...formData, material_type: e.target.value })}
+              >
+                <option value="section">قطاع (ألومنيوم)</option>
+                <option value="scrap">سكراب (خردة)</option>
+                <option value="other">أخرى</option>
               </select>
             </div>
-          )}
-
-          <div className="form-group">
-            <label className="form-label">الصنف / المنتج *</label>
-            <input type="text" className="form-input" value={formData.product} onChange={(e) => setFormData({ ...formData, product: e.target.value })} />
           </div>
 
           <div style={{ display: 'flex', gap: '16px' }}>
             <div className="form-group" style={{ flex: 1 }}>
-              <label className="form-label">الكمية / الوزن (اختياري)</label>
-              <input type="number" step="0.001" min="0" className="form-input" value={formData.quantity} onChange={(e) => setFormData({ ...formData, quantity: e.target.value })} />
+              <label className="form-label">
+                الوزن / الكمية (كجم) {formData.material_type === 'scrap' ? '(اختياري)' : '(اختياري)'}
+              </label>
+              <input type="number" step="0.001" min="0" className="form-input" value={formData.quantity} onChange={(e) => setFormData({ ...formData, quantity: e.target.value })} placeholder="الوزن بالكيلوجرام" />
             </div>
             <div className="form-group" style={{ flex: 1 }}>
               <label className="form-label">الخصم (الكمية/الوزن)</label>
@@ -418,6 +584,187 @@ const PurchasesPage = () => {
           <div className="form-group">
             <label className="form-label">المبلغ الإجمالي (الفاتورة) *</label>
             <input type="number" step="0.01" min="0" className="form-input" value={formData.total} onChange={(e) => setFormData({ ...formData, total: e.target.value })} />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">طريقة الدفع (الخصم من الخزينة) *</label>
+            <select
+              className="form-select"
+              value={formData.channel}
+              onChange={(e) => setFormData({ ...formData, channel: e.target.value })}
+            >
+              <option value="cash">نقدي (كاش)</option>
+              <option value="wallet">محفظة إلكترونية</option>
+              <option value="instapay">انستاباي</option>
+              <option value="bank">إيداع بنكي</option>
+            </select>
+          </div>
+
+          {/* Bank Receipt Upload for Purchases */}
+          {formData.channel === 'bank' && (
+            <div className="form-group" style={{
+              background: 'rgba(217, 119, 6, 0.05)', border: '1.5px dashed #d97706',
+              borderRadius: 10, padding: '12px 14px', marginBottom: 16
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <label className="form-label" style={{ margin: 0, color: '#92400e', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Landmark size={14} color="#d97706" /> صورة إيصال التحويل / الإيداع البنكي *
+                </label>
+                {formData.receipt_image && (
+                  <button
+                    type="button"
+                    onClick={() => setFormData(p => ({ ...p, receipt_image: null }))}
+                    style={{
+                      background: '#fee2e2', color: '#dc2626', border: 'none',
+                      borderRadius: 6, padding: '2px 8px', fontSize: '0.72rem',
+                      fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4
+                    }}
+                  >
+                    <X size={12} /> حذف الصورة
+                  </button>
+                )}
+              </div>
+              {formData.receipt_image ? (
+                <div style={{ textAlign: 'center' }}>
+                  <img
+                    src={formData.receipt_image}
+                    alt="إيصال البنك"
+                    style={{ maxHeight: 150, maxWidth: '100%', borderRadius: 8, border: '1px solid #fed7aa', objectFit: 'contain' }}
+                  />
+                </div>
+              ) : (
+                <label style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  padding: '12px', borderRadius: 8, background: '#fff', border: '1px dashed #cbd5e1',
+                  cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, color: '#b45309'
+                }}>
+                  <Upload size={16} />
+                  انقر لاختيار صورة إيصال البنك
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = (ev) => setFormData(p => ({ ...p, receipt_image: ev.target.result }));
+                      reader.readAsDataURL(file);
+                    }}
+                  />
+                </label>
+              )}
+            </div>
+          )}
+
+          {/* Scale Ticket Image (كارتة الميزان) */}
+          <div className="form-group" style={{
+            background: 'rgba(22, 163, 74, 0.05)', border: '1.5px dashed #16a34a',
+            borderRadius: 10, padding: '12px 14px', marginBottom: 16
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <label className="form-label" style={{ margin: 0, color: '#14532d', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+                🏷️ كارتة الميزان (اختياري)
+              </label>
+              {formData.scale_ticket_image && (
+                <button
+                  type="button"
+                  onClick={() => setFormData(p => ({ ...p, scale_ticket_image: null }))}
+                  style={{
+                    background: '#fee2e2', color: '#dc2626', border: 'none',
+                    borderRadius: 6, padding: '2px 8px', fontSize: '0.72rem',
+                    fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4
+                  }}
+                >
+                  <X size={12} /> حذف الصورة
+                </button>
+              )}
+            </div>
+            {formData.scale_ticket_image ? (
+              <div style={{ textAlign: 'center' }}>
+                <img
+                  src={formData.scale_ticket_image}
+                  alt="كارتة الميزان"
+                  style={{ maxHeight: 150, maxWidth: '100%', borderRadius: 8, border: '1px solid #bbf7d0', objectFit: 'contain' }}
+                />
+              </div>
+            ) : (
+              <label style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                padding: '12px', borderRadius: 8, background: '#fff', border: '1px dashed #cbd5e1',
+                cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, color: '#15803d'
+              }}>
+                <Upload size={16} />
+                انقر لاختيار أو التقاط صورة كارتة الميزان
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => setFormData(p => ({ ...p, scale_ticket_image: ev.target.result }));
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+            )}
+          </div>
+
+          {/* Purchase / Material Image (صورة البضاعة أو الفاتورة) */}
+          <div className="form-group" style={{
+            background: 'rgba(37, 99, 235, 0.05)', border: '1.5px dashed #2563eb',
+            borderRadius: 10, padding: '12px 14px', marginBottom: 16
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <label className="form-label" style={{ margin: 0, color: '#1e40af', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+                📷 صورة البضاعة / الفاتورة عند الشراء (اختياري)
+              </label>
+              {formData.image_url && (
+                <button
+                  type="button"
+                  onClick={() => setFormData(p => ({ ...p, image_url: null }))}
+                  style={{
+                    background: '#fee2e2', color: '#dc2626', border: 'none',
+                    borderRadius: 6, padding: '2px 8px', fontSize: '0.72rem',
+                    fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4
+                  }}
+                >
+                  <X size={12} /> حذف الصورة
+                </button>
+              )}
+            </div>
+            {formData.image_url ? (
+              <div style={{ textAlign: 'center' }}>
+                <img
+                  src={formData.image_url}
+                  alt="صورة البضاعة"
+                  style={{ maxHeight: 150, maxWidth: '100%', borderRadius: 8, border: '1px solid #bfdbfe', objectFit: 'contain' }}
+                />
+              </div>
+            ) : (
+              <label style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                padding: '12px', borderRadius: 8, background: '#fff', border: '1px dashed #cbd5e1',
+                cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, color: '#2563eb'
+              }}>
+                <Upload size={16} />
+                انقر لاختيار أو التقاط صورة البضاعة أو الفاتورة
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => setFormData(p => ({ ...p, image_url: ev.target.result }));
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+            )}
           </div>
 
           <div className="form-group">
@@ -454,22 +801,26 @@ const PurchasesPage = () => {
                       />
                     </div>
                     <div className="form-group" style={{ flex: 1, margin: 0 }}>
-                      <label className="form-label">عدد اللفات / القطع *</label>
+                      <label className="form-label">
+                        عدد اللفات / القطع {formData.material_type === 'scrap' ? '(اختياري للسكراب)' : '*'}
+                      </label>
                       <input
                         type="number"
-                        min="1"
+                        min="0"
                         step="1"
                         className="form-input"
                         placeholder="عدد اللفات المدخلة للمخزن"
                         value={formData.inventory_count}
                         onChange={(e) => setFormData({ ...formData, inventory_count: e.target.value })}
-                        required={formData.add_to_inventory}
+                        required={formData.add_to_inventory && formData.material_type !== 'scrap'}
                       />
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: '12px' }}>
                     <div className="form-group" style={{ flex: 1, margin: 0 }}>
-                      <label className="form-label">سعر بيع اللفة في المخزن (ج.م) *</label>
+                      <label className="form-label">
+                        سعر بيع اللفة في المخزن (ج.م) {formData.material_type === 'scrap' ? '(اختياري للسكراب)' : '*'}
+                      </label>
                       <input
                         type="number"
                         min="0"
@@ -478,7 +829,7 @@ const PurchasesPage = () => {
                         placeholder="سعر بيع اللفة"
                         value={formData.inventory_roll_price}
                         onChange={(e) => setFormData({ ...formData, inventory_roll_price: e.target.value })}
-                        required={formData.add_to_inventory}
+                        required={formData.add_to_inventory && formData.material_type !== 'scrap'}
                       />
                     </div>
                     <div className="form-group" style={{ flex: 1, margin: 0 }}>
@@ -643,68 +994,22 @@ const PurchasesPage = () => {
       <Modal
         isOpen={transferModalOpen}
         onClose={() => { setTransferModalOpen(false); setItemToTransfer(null); }}
-        title={`ترحيل صنف (${itemToTransfer?.product || ''}) إلى المخزن`}
+        title={`ترحيل صنف إلى المخزن`}
       >
         <form onSubmit={handleExecuteTransfer}>
-          <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(2, 132, 199, 0.08)', borderRadius: '8px', border: '1px solid rgba(2, 132, 199, 0.2)', fontSize: '0.88rem' }}>
-            فاتورة مشتريات بتاريخ: <strong>{itemToTransfer ? format(new Date(itemToTransfer.date), 'yyyy/MM/dd') : ''}</strong> — إجمالي: <strong>{Number(itemToTransfer?.total || 0).toFixed(2)} ج.م</strong>
+          <div style={{ marginBottom: '20px', padding: '16px', background: 'rgba(2, 132, 199, 0.08)', borderRadius: '10px', border: '1px solid rgba(2, 132, 199, 0.2)', fontSize: '0.9rem', lineHeight: '1.7' }}>
+            <div><strong>الصنف:</strong> {itemToTransfer?.product}</div>
+            <div><strong>التاريخ:</strong> {itemToTransfer ? format(new Date(itemToTransfer.date), 'yyyy/MM/dd') : ''}</div>
+            <div><strong>الوزن:</strong> {Number(itemToTransfer?.weight_quantity || 0).toFixed(3)} كجم</div>
+            <div><strong>عدد اللفات:</strong> {itemToTransfer?.count || '—'}</div>
+            <div><strong>إجمالي الفاتورة:</strong> <span style={{ color: 'var(--danger)', fontWeight: 'bold' }}>{Number(itemToTransfer?.total || 0).toFixed(2)} ج.م</span></div>
           </div>
 
-          <div className="form-group">
-            <label className="form-label">الشركة المصنعة (اختياري)</label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="مثال: التحرير"
-              value={transferData.company}
-              onChange={(e) => setTransferData({ ...transferData, company: e.target.value })}
-            />
+          <div style={{ marginBottom: '20px', padding: '12px 16px', background: 'rgba(22, 163, 74, 0.07)', borderRadius: '8px', border: '1px solid rgba(22, 163, 74, 0.2)', fontSize: '0.85rem', color: '#166534' }}>
+            📦 سيتم إضافة هذه الفاتورة للمخزن بنفس بيانات الشراء (الوزن، العدد، الشركة، السعر).
           </div>
 
-          <div style={{ display: 'flex', gap: '16px' }}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label className="form-label">عدد اللفات / القطع *</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                className="form-input"
-                placeholder="أدخل عدد اللفات"
-                value={transferData.count}
-                onChange={(e) => setTransferData({ ...transferData, count: e.target.value })}
-                required
-                autoFocus
-              />
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label className="form-label">سعر بيع اللفة (ج.م) *</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                className="form-input"
-                placeholder="سعر بيع اللفة للمخزن"
-                value={transferData.roll_price}
-                onChange={(e) => setTransferData({ ...transferData, roll_price: e.target.value })}
-                required
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">الوزن الإجمالي للكمية (كجم/طن)</label>
-            <input
-              type="number"
-              min="0"
-              step="0.001"
-              className="form-input"
-              placeholder="الوزن الإجمالي"
-              value={transferData.weight_quantity}
-              onChange={(e) => setTransferData({ ...transferData, weight_quantity: e.target.value })}
-            />
-          </div>
-
-          <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
+          <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
             <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={isTransferring}>
               {isTransferring ? 'جاري الترحيل...' : '📦 تأكيد الترحيل للمخزن'}
             </button>
@@ -714,6 +1019,79 @@ const PurchasesPage = () => {
           </div>
         </form>
       </Modal>
+
+      {/* Printable Purchase Invoice */}
+      <PrintablePurchaseInvoice
+        isOpen={isPrintModalOpen}
+        onClose={() => { setIsPrintModalOpen(false); setSelectedPurchaseForPrint(null); }}
+        purchase={selectedPurchaseForPrint}
+      />
+
+      {/* Receipt Image Preview Modal */}
+      {selectedReceiptModal && (
+        <Modal isOpen={Boolean(selectedReceiptModal)} onClose={() => setSelectedReceiptModal(null)} title="صورة إيصال التحويل / الإيداع البنكي">
+          <div style={{ textAlign: 'center', padding: '10px' }}>
+            <img
+              src={selectedReceiptModal}
+              alt="إيصال المشتريات البنكي"
+              style={{ maxWidth: '100%', maxHeight: '65vh', borderRadius: '8px', border: '1px solid #e2e8f0', objectFit: 'contain' }}
+            />
+            <div style={{ marginTop: '16px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setSelectedReceiptModal(null)}
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Scale Ticket Preview Modal */}
+      {scaleTicketModal && (
+        <Modal isOpen={Boolean(scaleTicketModal)} onClose={() => setScaleTicketModal(null)} title="صورة كارتة الميزان">
+          <div style={{ textAlign: 'center', padding: '10px' }}>
+            <img
+              src={scaleTicketModal}
+              alt="كارتة الميزان"
+              style={{ maxWidth: '100%', maxHeight: '65vh', borderRadius: '8px', border: '1px solid #bbf7d0', objectFit: 'contain' }}
+            />
+            <div style={{ marginTop: '16px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setScaleTicketModal(null)}
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Purchase / Material Image Preview Modal */}
+      {selectedImageModal && (
+        <Modal isOpen={Boolean(selectedImageModal)} onClose={() => setSelectedImageModal(null)} title="صورة البضاعة / الفاتورة عند الشراء">
+          <div style={{ textAlign: 'center', padding: '10px' }}>
+            <img
+              src={selectedImageModal}
+              alt="صورة البضاعة"
+              style={{ maxWidth: '100%', maxHeight: '65vh', borderRadius: '8px', border: '1px solid #bfdbfe', objectFit: 'contain' }}
+            />
+            <div style={{ marginTop: '16px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setSelectedImageModal(null)}
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 };

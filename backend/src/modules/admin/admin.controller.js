@@ -12,6 +12,8 @@ const getBranches = async (req, res, next) => {
         COALESCE((SELECT SUM(t.amount) FROM treasury t WHERE t.branch_id = b.id), 0)
           - COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.branch_id = b.id), 0)
           - COALESCE((SELECT SUM(p.treasury_balance) FROM purchases p WHERE p.branch_id = b.id), 0)
+          - COALESCE((SELECT SUM(trf_out.amount) FROM transfers trf_out WHERE trf_out.from_branch_id = b.id AND trf_out.type = 'monetary' AND trf_out.status IN ('pending', 'completed')), 0)
+          + COALESCE((SELECT SUM(trf_in.amount) FROM transfers trf_in WHERE trf_in.to_branch_id = b.id AND trf_in.type = 'monetary' AND trf_in.status = 'completed'), 0)
           as treasury_total,
         (SELECT COALESCE(SUM(s.total), 0) FROM sales s WHERE s.branch_id = b.id) as sales_total,
         (SELECT COALESCE(SUM(e.amount), 0) FROM expenses e WHERE e.branch_id = b.id) as expenses_total,
@@ -158,11 +160,12 @@ const getAdminStats = async (req, res, next) => {
       pool.query(`SELECT COALESCE(SUM(total), 0) as total FROM sales`),
       pool.query(`SELECT COALESCE(SUM(total), 0) as total FROM purchases`),
       pool.query(`SELECT COALESCE(SUM(amount), 0) as total FROM expenses`),
-      // Treasury net = all treasury entries - expenses - purchases treasury_balance
+      // Treasury net = all treasury entries - expenses - purchases treasury_balance - pending in-transit transfers
       pool.query(`SELECT 
         COALESCE(SUM(t.amount), 0) - 
         COALESCE((SELECT SUM(e.amount) FROM expenses e), 0) - 
-        COALESCE((SELECT SUM(p.treasury_balance) FROM purchases p), 0) as net
+        COALESCE((SELECT SUM(p.treasury_balance) FROM purchases p), 0) -
+        COALESCE((SELECT SUM(trf.amount) FROM transfers trf WHERE trf.type = 'monetary' AND trf.status = 'pending'), 0) as net
         FROM treasury t`),
       pool.query(`SELECT COUNT(*) as count FROM customers WHERE is_active=true`),
     ]);
@@ -223,14 +226,36 @@ const getBranchTreasury = async (req, res, next) => {
       [branchId]
     );
 
-    const totalIn = tRes.rows.reduce((s, r) => s + Number(r.amount), 0);
+    // Outgoing monetary transfers
+    const trfOutRes = await pool.query(
+      `SELECT t.id, t.created_at as date, t.amount, CONCAT('تحويل صادر إلى فرع: ', to_b.name, ' - ', t.transfer_number) as notes, 'transfer_out' as source, t.created_at 
+       FROM transfers t 
+       JOIN branches to_b ON to_b.id = t.to_branch_id
+       WHERE t.from_branch_id=$1 AND t.type='monetary' AND t.status IN ('pending', 'completed')`,
+      [branchId]
+    );
+
+    // Incoming monetary transfers
+    const trfInRes = await pool.query(
+      `SELECT t.id, t.created_at as date, t.amount, CONCAT('تحويل وارد من فرع: ', from_b.name, ' - ', t.transfer_number) as notes, 'transfer_in' as source, t.created_at 
+       FROM transfers t 
+       JOIN branches from_b ON from_b.id = t.from_branch_id
+       WHERE t.to_branch_id=$1 AND t.type='monetary' AND t.status='completed'`,
+      [branchId]
+    );
+
+    const totalIn = tRes.rows.reduce((s, r) => s + Number(r.amount), 0)
+      + trfInRes.rows.reduce((s, r) => s + Number(r.amount), 0);
     const totalOut = eRes.rows.reduce((s, r) => s + Number(r.amount), 0)
-      + pRes.rows.reduce((s, r) => s + Number(r.amount), 0);
+      + pRes.rows.reduce((s, r) => s + Number(r.amount), 0)
+      + trfOutRes.rows.reduce((s, r) => s + Number(r.amount), 0);
 
     return sendSuccess(res, {
       records: tRes.rows,
       expenses: eRes.rows,
       purchases: pRes.rows,
+      transfers_out: trfOutRes.rows,
+      transfers_in: trfInRes.rows,
       totals: {
         total_in: totalIn,
         total_out: totalOut,

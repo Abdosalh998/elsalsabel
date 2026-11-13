@@ -150,6 +150,24 @@
   background: rgba(220, 38, 38, 0.2);
 }
 
+/* POS Hub highlight in sidebar */
+.sidebar-link.pos-highlight {
+  background: linear-gradient(135deg, rgba(201, 168, 76, 0.2), rgba(201, 168, 76, 0.08));
+  border: 1px solid rgba(201, 168, 76, 0.35);
+  color: #DFC07A;
+  font-weight: 700;
+}
+.sidebar-link.pos-highlight:hover {
+  background: linear-gradient(135deg, rgba(201, 168, 76, 0.32), rgba(201, 168, 76, 0.16));
+  color: #fff;
+}
+.sidebar-link.pos-highlight.active {
+  background: linear-gradient(135deg, #C9A84C, #A07830);
+  color: #fff;
+  border-color: #C9A84C;
+  border-right: 4px solid #fff;
+}
+
 .sidebar-overlay {
   display: block;
   position: fixed;

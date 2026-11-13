@@ -51,7 +51,9 @@ const AdminBranchView = () => {
           const allT = [
             ...(r.data.records || []),
             ...(r.data.expenses || []),
-            ...(r.data.purchases || [])
+            ...(r.data.purchases || []),
+            ...(r.data.transfers_out || []),
+            ...(r.data.transfers_in || [])
           ].sort((a, b) => new Date(b.created_at || b.date) - new Date(a.created_at || a.date));
           setData(allT);
         } else {
@@ -90,8 +92,8 @@ const AdminBranchView = () => {
       ],
       treasury: [
         { h: 'التاريخ', r: r => fmtDate(r.date) },
-        { h: 'النوع', r: r => <span style={{ color: r.source === 'treasury' ? 'var(--success)' : 'var(--danger)' }}>{r.source === 'treasury' ? 'وارد' : 'صادر'}</span> },
-        { h: 'المبلغ', r: r => <span style={{ color: r.source === 'treasury' ? 'var(--success)' : 'var(--danger)', fontWeight: 700 }}>{fmt(r.amount)}</span> },
+        { h: 'النوع', r: r => <span style={{ color: (r.source === 'treasury' || r.source === 'transfer_in') ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{(r.source === 'treasury' || r.source === 'transfer_in') ? 'وارد' : 'صادر'}</span> },
+        { h: 'المبلغ', r: r => <span style={{ color: (r.source === 'treasury' || r.source === 'transfer_in') ? 'var(--success)' : 'var(--danger)', fontWeight: 700 }}>{fmt(r.amount)}</span> },
         { h: 'البيان', r: r => r.notes || '-' },
       ],
       customers: [

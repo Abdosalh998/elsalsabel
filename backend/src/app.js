@@ -20,6 +20,11 @@ const purchasesRoutes = require('./modules/purchases/purchases.routes');
 const treasuryRoutes = require('./modules/treasury/treasury.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const adminRoutes = require('./modules/admin/admin.routes');
+const reportsRoutes = require('./modules/reports/reports.routes');
+const transfersRoutes = require('./modules/transfers/transfers.routes');
+const returnsRoutes = require('./modules/returns/returns.routes');
+const coloringRoutes = require('./modules/coloring/coloring.routes');
+const custodyRoutes = require('./modules/custody/custody.routes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -43,11 +48,16 @@ app.use('/api/customers', customersRoutes);
 app.use('/api/balances', balancesRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
+app.use('/api/returns', returnsRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/purchases', purchasesRoutes);
 app.use('/api/treasury', treasuryRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/reports', reportsRoutes);
+app.use('/api/transfers', transfersRoutes);
+app.use('/api/coloring', coloringRoutes);
+app.use('/api/custody', custodyRoutes);
 
 // ─── Health Check ──────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

@@ -1,0 +1,302 @@
+/* ═════════════════════════════════════════════════════════════════
+   Printable Invoices & Vouchers — Universal Mobile-Responsive Styles
+═════════════════════════════════════════════════════════════════ */
+
+/* 1. Modal Overlay */
+.printable-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+/* 2. Modal Dialog Card */
+.printable-modal-dialog {
+  background: #fff;
+  border-radius: 16px;
+  width: 100%;
+  max-height: 92vh;
+  max-height: 92dvh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  transition: max-width 0.25s ease;
+  box-sizing: border-box;
+}
+
+.printable-modal-dialog.format-a4 {
+  max-width: 860px;
+}
+
+.printable-modal-dialog.format-thermal {
+  max-width: 440px;
+}
+
+/* 3. Action Bar / Header */
+.printable-action-bar {
+  padding: 12px 18px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.printable-action-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.printable-title {
+  font-weight: 700;
+  color: #1e293b;
+  font-size: 1rem;
+  white-space: nowrap;
+}
+
+.printable-action-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.printable-format-switcher {
+  display: inline-flex;
+  background: #e2e8f0;
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.printable-format-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.printable-print-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 16px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.86rem;
+  font-family: inherit;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.printable-print-btn:hover {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
+
+.printable-close-btn {
+  background: #f1f5f9;
+  border: none;
+  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.printable-close-btn:hover {
+  background: #fee2e2;
+  color: #ef4444;
+}
+
+.desktop-only {
+  display: flex !important;
+}
+
+.mobile-only {
+  display: none !important;
+}
+
+/* 4. Scrollable Viewport for Document */
+.printable-scroll-viewport {
+  overflow-y: auto;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+  box-sizing: border-box;
+  background: #f1f5f9;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 5. Paper Sheet Container */
+.printable-sheet {
+  background: #fff;
+  box-sizing: border-box;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+  border-radius: 4px;
+  color: #0f172a;
+  font-family: 'Tajawal', 'Segoe UI', Tahoma, sans-serif;
+  direction: rtl;
+  width: 100%;
+}
+
+.printable-sheet.sheet-a4 {
+  max-width: 820px;
+  min-width: 680px; /* CRUCIAL: Protects A4 table columns from squashing on mobile */
+  padding: 28px 32px;
+}
+
+.printable-sheet.sheet-thermal {
+  max-width: 380px;
+  min-width: 280px;
+  padding: 16px 14px;
+}
+
+/* 6. Mobile Preview Hint (only shown on screens <= 640px in A4 mode) */
+.printable-mobile-hint {
+  display: none;
+}
+
+/* ═════════════════════════════════════════════════════════════════
+   Mobile Breakpoints (<= 640px)
+═════════════════════════════════════════════════════════════════ */
+@media (max-width: 640px) {
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-only {
+    display: flex !important;
+  }
+
+  .printable-modal-overlay {
+    padding: 6px;
+  }
+
+  .printable-modal-dialog {
+    max-height: 96dvh;
+    border-radius: 12px;
+  }
+
+  .printable-action-bar {
+    padding: 10px 12px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  /* Row 1: Title (Right) + Close X (Left) */
+  .printable-action-top {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .printable-title {
+    font-size: 0.92rem;
+  }
+
+  /* Row 2: Switcher + Print Button */
+  .printable-action-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .printable-format-switcher {
+    flex: 1;
+    justify-content: space-around;
+  }
+
+  .printable-format-btn {
+    flex: 1;
+    justify-content: center;
+    padding: 6px 4px;
+    font-size: 0.74rem;
+  }
+
+  .printable-print-btn {
+    padding: 7px 12px;
+    font-size: 0.8rem;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .printable-scroll-viewport {
+    padding: 8px 4px;
+  }
+
+  .printable-sheet.sheet-a4 {
+    padding: 18px 14px;
+  }
+
+  .printable-sheet.sheet-thermal {
+    padding: 14px 10px;
+  }
+
+  .printable-mobile-hint {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: #e0f2fe;
+    color: #0369a1;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    width: 100%;
+    max-width: 680px;
+    box-sizing: border-box;
+    text-align: center;
+  }
+}
+
+@media (max-width: 420px) {
+  .printable-title {
+    font-size: 0.86rem;
+  }
+
+  .printable-format-btn {
+    font-size: 0.7rem;
+    padding: 5px 2px;
+  }
+
+  .printable-print-btn {
+    font-size: 0.76rem;
+    padding: 6px 10px;
+  }
+}

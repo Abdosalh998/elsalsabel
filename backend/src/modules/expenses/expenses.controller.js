@@ -15,55 +15,56 @@ const getExpenses = async (req, res, next) => {
     const params = [branch_id];
     let paramIndex = 2;
 
+    let countQuery = `SELECT COUNT(*) FROM expenses WHERE branch_id = $1`;
+    const countParams = [branch_id];
+    let countIndex = 2;
+
     if (description) {
-      query += ` AND description ILIKE $${paramIndex}`;
-      params.push(`%${description}%`);
-      paramIndex++;
+      const values = description.split(',').map(v => v.trim()).filter(Boolean);
+      if (values.length === 1) {
+        query += ` AND description ILIKE $${paramIndex}`;
+        countQuery += ` AND description ILIKE $${countIndex}`;
+        params.push(`%${values[0]}%`);
+        countParams.push(`%${values[0]}%`);
+        paramIndex++;
+        countIndex++;
+      } else {
+        query += ` AND description = ANY($${paramIndex}::text[])`;
+        countQuery += ` AND description = ANY($${countIndex}::text[])`;
+        params.push(values);
+        countParams.push(values);
+        paramIndex++;
+        countIndex++;
+      }
     }
 
     if (dateFrom && dateTo) {
       query += ` AND date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+      countQuery += ` AND date BETWEEN $${countIndex} AND $${countIndex + 1}`;
       params.push(dateFrom, dateTo);
+      countParams.push(dateFrom, dateTo);
       paramIndex += 2;
+      countIndex += 2;
     } else if (dateFrom) {
       query += ` AND date >= $${paramIndex}`;
+      countQuery += ` AND date >= $${countIndex}`;
       params.push(dateFrom);
+      countParams.push(dateFrom);
       paramIndex++;
+      countIndex++;
     } else if (dateTo) {
       query += ` AND date <= $${paramIndex}`;
+      countQuery += ` AND date <= $${countIndex}`;
       params.push(dateTo);
+      countParams.push(dateTo);
       paramIndex++;
+      countIndex++;
     }
 
     query += ` ORDER BY date DESC, id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(limit, offset);
 
     const result = await pool.query(query, params);
-    
-    let countQuery = `SELECT COUNT(*) FROM expenses WHERE branch_id = $1`;
-    const countParams = [branch_id];
-    let countIndex = 2;
-
-    if (description) {
-      countQuery += ` AND description ILIKE $${countIndex}`;
-      countParams.push(`%${description}%`);
-      countIndex++;
-    }
-
-    if (dateFrom && dateTo) {
-      countQuery += ` AND date BETWEEN $${countIndex} AND $${countIndex + 1}`;
-      countParams.push(dateFrom, dateTo);
-      countIndex += 2;
-    } else if (dateFrom) {
-      countQuery += ` AND date >= $${countIndex}`;
-      countParams.push(dateFrom);
-      countIndex++;
-    } else if (dateTo) {
-      countQuery += ` AND date <= $${countIndex}`;
-      countParams.push(dateTo);
-      countIndex++;
-    }
-
     const countResult = await pool.query(countQuery, countParams);
 
     return sendSuccess(res, {
@@ -83,27 +84,44 @@ const getExpenses = async (req, res, next) => {
 const addExpense = async (req, res, next) => {
   try {
     const { branch_id } = req.user;
-    const { date, description, amount, notes = '', override_reason = '' } = req.body;
+    let { date, description, amount, notes = '', override_reason = '', recipient_name = '', channel = 'cash', items = [], receipt_image = null } = req.body;
 
-    if (!date || !description || !amount) return sendError(res, 'التاريخ، الوصف، والمبلغ مطلوبة');
-    const expenseAmount = Number(amount);
+    let expenseAmount = Number(amount || 0);
 
-    const currentBalance = await getCurrentTreasuryBalance(branch_id);
+    // If multi-item expenses provided
+    if (Array.isArray(items) && items.length > 0) {
+      expenseAmount = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+      if (!description) {
+        description = items.map(it => it.description).filter(Boolean).join(' + ');
+      }
+    }
+
+    if (!date || (!description && (!items || items.length === 0)) || expenseAmount <= 0) {
+      return sendError(res, 'التاريخ، البند، والمبلغ مطلوبة بشكل صحيح');
+    }
+
+    const balanceInfo = await getCurrentTreasuryBalance(branch_id);
+    const currentBalance = typeof balanceInfo === 'object' && balanceInfo !== null
+      ? Number(balanceInfo.total || 0)
+      : Number(balanceInfo || 0);
 
     if (expenseAmount > currentBalance && !override_reason) {
       return res.status(400).json({
         success: false,
         requiresOverride: true,
-        message: `رصيد الخزينة الحالي (${currentBalance}) غير كافٍ. يرجى كتابة سبب التجاوز للمتابعة.`
+        message: `رصيد الخزينة الحالي (${currentBalance.toFixed(2)}) غير كافٍ. يرجى كتابة سبب التجاوز للمتابعة.`
       });
     }
 
     const newBalance = currentBalance - expenseAmount;
 
     const result = await pool.query(
-      `INSERT INTO expenses (branch_id, date, description, amount, treasury_balance_before, treasury_balance_after, notes, override_reason)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [branch_id, date, description, expenseAmount, currentBalance, newBalance, notes, override_reason]
+      `INSERT INTO expenses (branch_id, date, description, amount, treasury_balance_before, treasury_balance_after, notes, override_reason, recipient_name, channel, items, receipt_image)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [
+        branch_id, date, description, expenseAmount, currentBalance, newBalance, notes,
+        override_reason || null, recipient_name || null, channel || 'cash', JSON.stringify(items || []), receipt_image || null
+      ]
     );
 
     return sendSuccess(res, result.rows[0], 201, 'تم تسجيل المصروف بنجاح');
@@ -119,36 +137,48 @@ const updateExpense = async (req, res, next) => {
   try {
     const { branch_id } = req.user;
     const { id } = req.params;
-    const { date, description, amount, notes = '', override_reason = '' } = req.body;
+    let { date, description, amount, notes = '', override_reason = '', recipient_name = '', channel = 'cash', items = [], receipt_image = null } = req.body;
 
-    // Editing expenses is complex if we strictly trace treasury_balance_after historically, 
-    // but the system calculates global balance dynamically anyway.
-    // We will still validate the new amount against the global current balance if it increases.
-    
     const existing = await pool.query(`SELECT amount FROM expenses WHERE id = $1 AND branch_id = $2`, [id, branch_id]);
     if (existing.rows.length === 0) return sendError(res, 'المصروف غير موجود', 404);
     
+    let newAmount = Number(amount || 0);
+    if (Array.isArray(items) && items.length > 0) {
+      newAmount = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+      if (!description) {
+        description = items.map(it => it.description).filter(Boolean).join(' + ');
+      }
+    }
+
     const oldAmount = Number(existing.rows[0].amount);
-    const newAmount = Number(amount);
     
     if (newAmount > oldAmount) {
-      const currentBalance = await getCurrentTreasuryBalance(branch_id);
+      const balanceInfo = await getCurrentTreasuryBalance(branch_id);
+      const currentBalance = typeof balanceInfo === 'object' && balanceInfo !== null
+        ? Number(balanceInfo.total || 0)
+        : Number(balanceInfo || 0);
       const diff = newAmount - oldAmount;
       if (diff > currentBalance && !override_reason) {
         return res.status(400).json({
           success: false,
           requiresOverride: true,
-          message: `تعديل المصروف بالزيادة يتطلب رصيد غير متاح (${diff}). يرجى كتابة سبب التجاوز.`
+          message: `تعديل المصروف بالزيادة يتطلب رصيد غير متاح (${diff.toFixed(2)}). يرجى كتابة سبب التجاوز.`
         });
       }
     }
 
     const result = await pool.query(
       `UPDATE expenses 
-       SET date = $1, description = $2, amount = $3, notes = $4, override_reason = COALESCE($5, override_reason), updated_at = NOW()
-       WHERE id = $6 AND branch_id = $7 RETURNING *`,
-      [date, description, newAmount, notes, override_reason || null, id, branch_id]
+       SET date = $1, description = $2, amount = $3, notes = $4, override_reason = COALESCE($5, override_reason),
+           recipient_name = $6, channel = $7, items = $8, receipt_image = $9, updated_at = NOW()
+       WHERE id = $10 AND branch_id = $11 RETURNING *`,
+      [
+        date, description, newAmount, notes, override_reason || null,
+        recipient_name || null, channel || 'cash', JSON.stringify(items || []),
+        receipt_image || null, id, branch_id
+      ]
     );
+
 
     return sendSuccess(res, result.rows[0], 200, 'تم تحديث المصروف بنجاح');
   } catch (err) {

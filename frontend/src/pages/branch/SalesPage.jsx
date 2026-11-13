@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Edit, Trash2, Plus, Minus, ChevronDown, ChevronUp } from 'lucide-react';
+import { Edit, Trash2, Plus, Minus, ChevronDown, ChevronUp, Printer, TrendingUp, DollarSign, AlertCircle, Eye, Landmark, X, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import { salesService } from '../../services/sales.service';
@@ -10,12 +10,15 @@ import { useAuth } from '../../context/AuthContext';
 import DataTable from '../../components/common/DataTable';
 import Modal from '../../components/common/Modal';
 import ConfirmModal from '../../components/common/ConfirmModal';
+import PrintableInvoice from '../../components/sales/PrintableInvoice';
+import PartyPicker from '../../components/common/PartyPicker';
 
-const EMPTY_ITEM = { inventory_id: '', quantity: '', unit_price: '' };
+const EMPTY_ITEM = { inventory_id: '', weight: '', rolls_count: '1', price: '' };
 
 const SalesPage = () => {
   const { user } = useAuth();
   const [sales, setSales] = useState([]);
+  const [summary, setSummary] = useState({ total_sales_amount: 0, total_collected_amount: 0, total_remaining_amount: 0 });
   const [customers, setCustomers] = useState([]);
   const [selectedCustomerDetails, setSelectedCustomerDetails] = useState(null);
   const [inventoryList, setInventoryList] = useState([]);
@@ -30,6 +33,14 @@ const SalesPage = () => {
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [saleToDelete, setSaleToDelete] = useState(null);
 
+  // Print states
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [selectedInvoiceForPrint, setSelectedInvoiceForPrint] = useState(null);
+  const [isPrintLoading, setIsPrintLoading] = useState(null); // stores sale id being loaded
+
+  // Bank Receipt Modal
+  const [selectedReceiptModal, setSelectedReceiptModal] = useState(null);
+
   const [formData, setFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
     customer_id: '',
@@ -39,7 +50,9 @@ const SalesPage = () => {
     saveNewCustomer: true,
     paid_amount: '',
     payment_type_id: '',
-    notes: ''
+    notes: '',
+    use_customer_credit: true,
+    receipt_image: null
   });
 
   const [items, setItems] = useState([{ ...EMPTY_ITEM }]);
@@ -49,6 +62,9 @@ const SalesPage = () => {
     try {
       const res = await salesService.getSales(params);
       setSales(res.data.sales);
+      if (res.data.summary) {
+        setSummary(res.data.summary);
+      }
     } catch (error) {
       toast.error('حدث خطأ أثناء جلب المبيعات');
     } finally {
@@ -76,6 +92,19 @@ const SalesPage = () => {
     fetchDropdownData();
   }, [fetchData]);
 
+  const handlePrintInvoice = async (sale) => {
+    setIsPrintLoading(sale.id);
+    try {
+      const res = await salesService.getSaleById(sale.id);
+      setSelectedInvoiceForPrint(res.data);
+      setIsPrintModalOpen(true);
+    } catch (error) {
+      toast.error('تعذّر تحميل بيانات الفاتورة للطباعة');
+    } finally {
+      setIsPrintLoading(null);
+    }
+  };
+
   const handleOpenModal = (sale = null) => {
     if (sale) {
       setEditingSale(sale);
@@ -88,7 +117,9 @@ const SalesPage = () => {
         saveNewCustomer: true,
         paid_amount: 0,
         payment_type_id: '',
-        notes: sale.notes || ''
+        notes: sale.notes || '',
+        use_customer_credit: true,
+        receipt_image: sale.receipt_image || null
       });
       const cust = customers.find(c => c.id === sale.customer_id);
       setSelectedCustomerDetails(cust || null);
@@ -96,8 +127,9 @@ const SalesPage = () => {
       const saleItems = (sale.items && sale.items.length > 0)
         ? sale.items.map(i => ({
             inventory_id: String(i.inventory_id),
-            quantity: String(i.quantity),
-            unit_price: String(i.unit_price)
+            weight: String(i.weight ?? i.quantity ?? ''),
+            rolls_count: String(i.rolls_count ?? '1'),
+            price: String(i.price ?? i.unit_price ?? '')
           }))
         : [{ ...EMPTY_ITEM }];
       setItems(saleItems);
@@ -112,7 +144,9 @@ const SalesPage = () => {
         saveNewCustomer: true,
         paid_amount: '',
         payment_type_id: '',
-        notes: ''
+        notes: '',
+        use_customer_credit: true,
+        receipt_image: null
       });
       setSelectedCustomerDetails(null);
       setItems([{ ...EMPTY_ITEM }]);
@@ -120,21 +154,27 @@ const SalesPage = () => {
     setIsModalOpen(true);
   };
 
-  const handleCustomerChange = (e) => {
-    const custId = e.target.value;
-    setFormData(prev => ({ ...prev, customer_id: custId }));
-    const cust = customers.find(c => String(c.id) === String(custId));
-    setSelectedCustomerDetails(cust || null);
+  const handlePartyChange = (partyData) => {
+    setFormData(prev => ({
+      ...prev,
+      customer_id: partyData.customer_id,
+      customer_name: partyData.customer_name,
+      phone: partyData.phone,
+      isNewCustomer: partyData.isNewCustomer,
+      saveNewCustomer: partyData.saveNewCustomer
+    }));
+    setSelectedCustomerDetails(partyData.selectedCustomer || null);
   };
 
   const handleItemChange = (index, field, value) => {
     setItems(prev => {
       const updated = [...prev];
       updated[index] = { ...updated[index], [field]: value };
-      // Auto-fill unit_price from inventory
       if (field === 'inventory_id' && value) {
         const inv = inventoryList.find(i => String(i.id) === String(value));
-        if (inv) updated[index].unit_price = String(inv.roll_price);
+        if (inv && !updated[index].price && (inv.price_per_kg || inv.roll_price)) {
+          updated[index].price = String(inv.price_per_kg || inv.roll_price);
+        }
       }
       return updated;
     });
@@ -149,9 +189,9 @@ const SalesPage = () => {
 
   const getInvoiceTotal = () => {
     return items.reduce((sum, item) => {
-      const qty = Number(item.quantity) || 0;
-      const price = Number(item.unit_price) || 0;
-      return sum + qty * price;
+      const weight = Number(item.weight) || 0;
+      const price = Number(item.price) || 0;
+      return sum + (weight * price);
     }, 0);
   };
 
@@ -168,8 +208,8 @@ const SalesPage = () => {
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (!item.inventory_id || !item.quantity || !item.unit_price) {
-        return toast.error(`يرجى إكمال بيانات الصنف رقم ${i + 1}`);
+      if (!item.inventory_id || !item.weight || !item.price) {
+        return toast.error(`يرجى إكمال بيانات الصنف رقم ${i + 1} (المنتج، الوزن، والسعر)`);
       }
     }
 
@@ -183,11 +223,16 @@ const SalesPage = () => {
         date: formData.date,
         paid_amount: Number(formData.paid_amount || 0),
         payment_type_id: formData.payment_type_id || undefined,
+        use_customer_credit: formData.use_customer_credit,
         notes: formData.notes,
+        receipt_image: formData.receipt_image || null,
         items: items.map(item => ({
           inventory_id: item.inventory_id,
-          quantity: Number(item.quantity),
-          unit_price: Number(item.unit_price)
+          weight: Number(item.weight),
+          rolls_count: Number(item.rolls_count || 1),
+          price: Number(item.price),
+          quantity: Number(item.weight),
+          unit_price: Number(item.price)
         }))
       };
 
@@ -199,16 +244,30 @@ const SalesPage = () => {
         payload.customer_id = formData.customer_id;
       }
 
+      let savedSaleId = null;
       if (editingSale) {
         await salesService.updateSale(editingSale.id, payload);
         toast.success('تم تحديث الفاتورة بنجاح');
+        savedSaleId = editingSale.id;
       } else {
-        await salesService.addSale(payload);
+        const res = await salesService.addSale(payload);
         toast.success('تم إضافة الفاتورة بنجاح');
+        savedSaleId = res.data?.id;
         if (formData.isNewCustomer) fetchDropdownData();
       }
       setIsModalOpen(false);
       fetchData();
+
+      // Auto-open print dialog for new invoice
+      if (!editingSale && savedSaleId) {
+        setTimeout(async () => {
+          try {
+            const printRes = await salesService.getSaleById(savedSaleId);
+            setSelectedInvoiceForPrint(printRes.data);
+            setIsPrintModalOpen(true);
+          } catch {}
+        }, 400);
+      }
     } catch (error) {
       toast.error(error.response?.data?.message || 'حدث خطأ غير متوقع');
     } finally {
@@ -295,9 +354,54 @@ const SalesPage = () => {
         );
       }
     },
-    { key: 'total', label: 'الإجمالي', render: (row) => <span style={{ fontWeight: 'bold' }}>{Number(row.total).toFixed(2)}</span> },
-    { key: 'paid_amount', label: 'المدفوع', render: (row) => <span style={{ color: 'var(--success)', fontWeight: 'bold' }}>{Number(row.paid_amount).toFixed(2)}</span> },
-    { key: 'remaining_balance', label: 'المتبقي', render: (row) => <span style={{ color: 'var(--danger)' }}>{Number(row.remaining_balance).toFixed(2)}</span> },
+    {
+      key: 'total',
+      label: 'الإجمالي',
+      sum: true,
+      renderSummary: (t) => `${t.toFixed(2)} ج.م`,
+      render: (row) => (
+        <div>
+          <span style={{ fontWeight: 'bold' }}>{Number(row.total).toFixed(2)}</span>
+          {Number(row.returns_total || 0) > 0 && (
+            <div style={{ fontSize: '0.73rem', color: '#dc2626', fontWeight: 600 }}>
+              مرتجع: -{Number(row.returns_total).toFixed(2)}
+            </div>
+          )}
+        </div>
+      )
+    },
+    {
+      key: 'paid_amount',
+      label: 'المدفوع',
+      sum: true,
+      renderSummary: (t) => <span style={{ color: 'var(--success)', fontWeight: 'bold' }}>{t.toFixed(2)} ج.م</span>,
+      render: (row) => <span style={{ color: 'var(--success)', fontWeight: 'bold' }}>{Number(row.paid_amount).toFixed(2)}</span>
+    },
+    {
+      key: 'remaining_balance',
+      label: 'المتبقي',
+      sum: true,
+      renderSummary: (t) => <span style={{ color: 'var(--danger)', fontWeight: 'bold' }}>{t.toFixed(2)} ج.م</span>,
+      render: (row) => <span style={{ color: 'var(--danger)' }}>{Number(row.remaining_balance).toFixed(2)}</span>
+    },
+    {
+      key: 'receipt_image',
+      label: 'إيصال البنك',
+      render: (row) => row.receipt_image ? (
+        <button
+          type="button"
+          onClick={() => setSelectedReceiptModal(row.receipt_image)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a',
+            borderRadius: 6, padding: '3px 8px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 700
+          }}
+          title="عرض صورة الإيصال البنكي"
+        >
+          <Eye size={13} /> عرض الإيصال
+        </button>
+      ) : '—'
+    },
   ];
 
   const renderExpandedRow = (row) => {
@@ -326,19 +430,38 @@ const SalesPage = () => {
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                 📋 تفاصيل أصناف الفاتورة #{row.invoice_number}
               </span>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                عدد البنود: <strong>{row.items.length}</strong>
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  عدد البنود: <strong>{row.items.length}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handlePrintInvoice(row)}
+                  disabled={isPrintLoading === row.id}
+                  title="طباعة الفاتورة"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '5px',
+                    background: '#16a34a', color: '#fff',
+                    border: 'none', borderRadius: '7px',
+                    padding: '4px 12px', cursor: 'pointer',
+                    fontSize: '0.78rem', fontWeight: 700,
+                    opacity: isPrintLoading === row.id ? 0.6 : 1
+                  }}
+                >
+                  <Printer size={13} />
+                  {isPrintLoading === row.id ? 'جاري التحميل...' : 'طباعة'}
+                </button>
+              </div>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
               <thead>
                 <tr style={{ background: 'var(--bg)' }}>
                   <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)', width: '40px' }}>#</th>
                   <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>الصنف</th>
-                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>الشركة</th>
-                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>الكمية (لفات)</th>
-                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>سعر اللفة</th>
-                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>الإجمالي</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>الوزن المباع (كج)</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>عدد اللفات</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>سعر الكيلو</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>الإجمالي (الوزن × السعر)</th>
                 </tr>
               </thead>
               <tbody>
@@ -346,10 +469,10 @@ const SalesPage = () => {
                   <tr key={idx} style={{ borderBottom: idx < row.items.length - 1 ? '1px solid var(--border)' : 'none' }}>
                     <td style={{ padding: '8px 12px', color: 'var(--text-muted)' }}>{idx + 1}</td>
                     <td style={{ padding: '8px 12px', fontWeight: 600 }}>{item.product_name || '-'}</td>
-                    <td style={{ padding: '8px 12px', color: 'var(--text-secondary)' }}>{item.company || '-'}</td>
-                    <td style={{ padding: '8px 12px', fontWeight: 600 }}>{Number(item.quantity)}</td>
-                    <td style={{ padding: '8px 12px' }}>{Number(item.unit_price).toFixed(2)} ج.م</td>
-                    <td style={{ padding: '8px 12px', fontWeight: 700, color: 'var(--primary)' }}>{Number(item.total).toFixed(2)} ج.م</td>
+                    <td style={{ padding: '8px 12px', fontWeight: 600, color: 'var(--primary)' }}>{Number(item.weight ?? item.quantity).toFixed(3)} كج</td>
+                    <td style={{ padding: '8px 12px', fontWeight: 600 }}>{item.rolls_count ?? 1}</td>
+                    <td style={{ padding: '8px 12px' }}>{Number(item.price ?? item.unit_price).toFixed(2)} ج.م</td>
+                    <td style={{ padding: '8px 12px', fontWeight: 700, color: 'var(--success)' }}>{Number(item.total).toFixed(2)} ج.م</td>
                   </tr>
                 ))}
               </tbody>
@@ -362,6 +485,15 @@ const SalesPage = () => {
 
   const renderActions = (row) => (
     <>
+      <button
+        className="btn btn-icon btn-ghost"
+        onClick={() => handlePrintInvoice(row)}
+        disabled={isPrintLoading === row.id}
+        title="طباعة الفاتورة"
+        style={{ color: '#16a34a' }}
+      >
+        <Printer size={16} />
+      </button>
       <button className="btn btn-icon btn-ghost" onClick={() => handleOpenModal(row)} title="تعديل">
         <Edit size={16} />
       </button>
@@ -375,13 +507,13 @@ const SalesPage = () => {
     {
       key: 'customer_id',
       label: 'اسم العميل',
-      type: 'select',
+      type: 'multi-select',
       options: customers.map(c => ({ label: c.name, value: c.id }))
     },
     {
       key: 'inventory_id',
       label: 'المنتج',
-      type: 'select',
+      type: 'multi-select',
       options: inventoryList.map(i => ({ label: i.product, value: i.id }))
     },
     {
@@ -407,6 +539,87 @@ const SalesPage = () => {
         renderExpandedRow={renderExpandedRow}
       />
 
+      {/* ═══ Bottom Totals Bar ═══ */}
+      {!loading && (
+        <div style={{
+          margin: '0 0 24px 0',
+          borderRadius: '14px',
+          overflow: 'hidden',
+          border: '1px solid var(--border)',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.06)',
+          background: 'var(--bg-card)'
+        }}>
+          <div style={{
+            padding: '10px 20px',
+            background: 'linear-gradient(135deg, #0284c7, #0369a1)',
+            color: '#fff',
+            fontWeight: 700,
+            fontSize: '0.9rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8
+          }}>
+            <TrendingUp size={16} />
+            ملخص المبيعات {summary.total_sales_amount > 0 ? '(وفق الفلتر الحالي)' : ''}
+          </div>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: 0
+          }}>
+            {/* Total Sales */}
+            <div style={{
+              padding: '18px 24px',
+              borderLeft: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4
+            }}>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <TrendingUp size={13} />
+                إجمالي المبيعات
+              </div>
+              <div style={{ fontWeight: 800, fontSize: '1.35rem', color: 'var(--primary)' }}>
+                {Number(summary.total_sales_amount).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>ج.م</span>
+              </div>
+            </div>
+
+            {/* Collected */}
+            <div style={{
+              padding: '18px 24px',
+              borderLeft: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4
+            }}>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <DollarSign size={13} />
+                إجمالي المحصّل
+              </div>
+              <div style={{ fontWeight: 800, fontSize: '1.35rem', color: 'var(--success)' }}>
+                {Number(summary.total_collected_amount).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>ج.م</span>
+              </div>
+            </div>
+
+            {/* Remaining */}
+            <div style={{
+              padding: '18px 24px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4
+            }}>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <AlertCircle size={13} />
+                إجمالي المتبقي (الذمم)
+              </div>
+              <div style={{ fontWeight: 800, fontSize: '1.35rem', color: Number(summary.total_remaining_amount) > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                {Number(summary.total_remaining_amount).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>ج.م</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -424,83 +637,57 @@ const SalesPage = () => {
             />
           </div>
 
-          {/* Customer */}
-          <div className="form-group">
-            <label className="form-label">العميل *</label>
-            {!editingSale && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                <input
-                  type="checkbox"
-                  id="saleNewCustomer"
-                  checked={formData.isNewCustomer}
-                  onChange={(e) => setFormData(prev => ({ ...prev, isNewCustomer: e.target.checked, customer_id: '', customer_name: '' }))}
-                />
-                <label htmlFor="saleNewCustomer" className="form-label" style={{ margin: 0, cursor: 'pointer' }}>عميل جديد؟</label>
-              </div>
-            )}
-
-            {formData.isNewCustomer && !editingSale ? (
-              <>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="أدخل اسم العميل الجديد"
-                  value={formData.customer_name}
-                  onChange={(e) => setFormData(prev => ({ ...prev, customer_name: e.target.value }))}
-                  autoFocus
-                />
-                <input
-                  type="tel"
-                  className="form-input"
-                  style={{ marginTop: '8px' }}
-                  placeholder="رقم الهاتف (اختياري)"
-                  value={formData.phone}
-                  onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
-                />
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
-                  <input
-                    type="checkbox"
-                    id="saveNewCustomer"
-                    checked={formData.saveNewCustomer}
-                    onChange={(e) => setFormData(prev => ({ ...prev, saveNewCustomer: e.target.checked }))}
-                  />
-                  <label htmlFor="saveNewCustomer" className="form-label" style={{ margin: 0, cursor: 'pointer', fontSize: '0.85rem' }}>حفظ العميل في السجل الدائم</label>
-                </div>
-              </>
-            ) : (
-              <>
-                <select
-                  className="form-select"
-                  value={formData.customer_id}
-                  onChange={handleCustomerChange}
-                  disabled={!!editingSale}
-                >
-                  <option value="">-- اختر العميل --</option>
-                  {customers.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-                {selectedCustomerDetails && (
-                  <div style={{ marginTop: '6px', fontSize: '0.82rem' }}>
+          {/* Customer Selection with PartyPicker */}
+          <PartyPicker
+            type="customer"
+            customers={customers}
+            value={{
+              customer_id: formData.customer_id,
+              customer_name: formData.customer_name,
+              phone: formData.phone,
+              isNewCustomer: formData.isNewCustomer,
+              saveNewCustomer: formData.saveNewCustomer
+            }}
+            onChange={handlePartyChange}
+            disabled={!!editingSale}
+            required={true}
+          />
+          {selectedCustomerDetails && (
+                  <div style={{ marginTop: '8px', fontSize: '0.84rem' }}>
                     {Number(selectedCustomerDetails.total_payments) > 0 ? (
-                      <div style={{ padding: '6px 10px', background: 'rgba(2, 132, 199, 0.08)', borderRadius: '6px', border: '1px solid rgba(2, 132, 199, 0.25)', color: 'var(--primary)' }}>
-                        💳 <strong>رصيد متاح للعميل:</strong> {Number(selectedCustomerDetails.total_payments).toFixed(2)} ج.م
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                          يتم خصم الفاتورة من هذا الرصيد تلقائياً.
-                        </div>
+                      <div style={{
+                        padding: '10px 14px', background: 'rgba(2, 132, 199, 0.08)',
+                        borderRadius: '8px', border: '1.5px solid rgba(2, 132, 199, 0.35)',
+                        color: 'var(--primary)'
+                      }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', margin: 0, fontWeight: 700 }}>
+                          <input
+                            type="checkbox"
+                            checked={formData.use_customer_credit}
+                            onChange={(e) => setFormData(prev => ({ ...prev, use_customer_credit: e.target.checked }))}
+                            style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          />
+                          <span>💳 استخدام الرصيد الدائن المتاح للعميل ({Number(selectedCustomerDetails.total_payments).toFixed(2)} ج.م)</span>
+                        </label>
+                        {formData.use_customer_credit ? (
+                          <div style={{ fontSize: '0.78rem', color: '#0369a1', marginTop: '6px', marginRight: '24px' }}>
+                            ✓ سيتم خصم {Math.min(Number(selectedCustomerDetails.total_payments), invoiceTotal).toFixed(2)} ج.م من رصيد العميل لتغطية الفاتورة.
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '6px', marginRight: '24px' }}>
+                            لن يتم الخصم من الرصيد، وسيتم دفع الفاتورة نقداً/إلكترونياً أو إبقاؤها مديونية.
+                          </div>
+                        )}
                       </div>
                     ) : Number(selectedCustomerDetails.customer_total) > 0 ? (
-                      <span style={{ color: 'var(--danger)', fontWeight: 600 }}>
-                        ⚠️ عليه مديونية سابقة: {Number(selectedCustomerDetails.customer_total).toFixed(2)} ج.م
-                      </span>
+                      <div style={{ padding: '6px 10px', background: 'rgba(239, 68, 68, 0.08)', borderRadius: '6px', border: '1px solid rgba(239, 68, 68, 0.25)', color: 'var(--danger)', fontWeight: 600 }}>
+                        ⚠️ العميل عليه مديونية سابقة: {Number(selectedCustomerDetails.customer_total).toFixed(2)} ج.م
+                      </div>
                     ) : (
-                      <span style={{ color: 'var(--success)' }}>✓ حسابه خالص</span>
+                      <span style={{ color: 'var(--success)', fontWeight: 600 }}>✓ حساب العميل خالص</span>
                     )}
                   </div>
                 )}
-              </>
-            )}
-          </div>
 
           {/* Items */}
           <div style={{ marginBottom: '16px' }}>
@@ -523,8 +710,9 @@ const SalesPage = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {items.map((item, index) => {
                 const inv = inventoryList.find(i => String(i.id) === String(item.inventory_id));
-                const available = inv ? Number(inv.count) - Number(inv.issued_quantity) : 0;
-                const lineTotal = (Number(item.quantity) || 0) * (Number(item.unit_price) || 0);
+                const availableWeight = inv ? Math.max(0, Number(inv.available_quantity ?? inv.remaining_weight ?? 0)) : 0;
+                const availableRolls = inv ? Math.max(0, Number(inv.available_rolls ?? (Number(inv.count || 0) - Number(inv.issued_rolls || 0)))) : 0;
+                const lineTotal = (Number(item.weight) || 0) * (Number(item.price) || 0);
 
                 return (
                   <div key={index} style={{
@@ -559,42 +747,55 @@ const SalesPage = () => {
                         >
                           <option value="">-- اختر المنتج --</option>
                           {inventoryList.map(inv => {
-                            const avail = Number(inv.count) - Number(inv.issued_quantity);
+                            const availW = Number(inv.available_quantity ?? inv.remaining_weight ?? 0);
+                            const availR = Math.max(0, Number(inv.available_rolls ?? (Number(inv.count || 0) - Number(inv.issued_rolls || 0))));
                             return (
                               <option key={inv.id} value={inv.id}>
-                                {inv.product} (متاح: {avail} لفة)
+                                {inv.product} — متاح: {availW.toFixed(2)} كجم | {availR} لفة
                               </option>
                             );
                           })}
                         </select>
                         {inv && (
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-                            متاح: {available} لفة
+                            المتاح بالمخزن: <strong style={{ color: 'var(--primary)' }}>{availableWeight.toFixed(3)} كج</strong> ({availableRolls} لفة)
                           </div>
                         )}
                       </div>
-                      <div style={{ flex: '1', minWidth: '90px' }}>
+                      <div style={{ flex: '1', minWidth: '100px' }}>
+                        <label className="form-label" style={{ fontSize: '0.8rem' }}>الوزن المراد بيعه (كج) *</label>
+                        <input
+                          type="number"
+                          step="0.001"
+                          min="0.001"
+                          className="form-input"
+                          value={item.weight}
+                          onChange={(e) => handleItemChange(index, 'weight', e.target.value)}
+                          placeholder="الوزن كج"
+                        />
+                      </div>
+                      <div style={{ flex: '1', minWidth: '80px' }}>
                         <label className="form-label" style={{ fontSize: '0.8rem' }}>عدد اللفات *</label>
                         <input
                           type="number"
                           step="1"
                           min="1"
                           className="form-input"
-                          value={item.quantity}
-                          onChange={(e) => handleItemChange(index, 'quantity', e.target.value)}
-                          placeholder="0"
+                          value={item.rolls_count}
+                          onChange={(e) => handleItemChange(index, 'rolls_count', e.target.value)}
+                          placeholder="اللفات"
                         />
                       </div>
                       <div style={{ flex: '1', minWidth: '90px' }}>
-                        <label className="form-label" style={{ fontSize: '0.8rem' }}>سعر اللفة *</label>
+                        <label className="form-label" style={{ fontSize: '0.8rem' }}>السعر (ج.م) *</label>
                         <input
                           type="number"
                           step="0.01"
                           min="0"
                           className="form-input"
-                          value={item.unit_price}
-                          onChange={(e) => handleItemChange(index, 'unit_price', e.target.value)}
-                          placeholder="0.00"
+                          value={item.price}
+                          onChange={(e) => handleItemChange(index, 'price', e.target.value)}
+                          placeholder="سعر الكيلو"
                         />
                       </div>
                       {lineTotal > 0 && (
@@ -629,6 +830,21 @@ const SalesPage = () => {
           </div>
 
           {/* Payment */}
+          {selectedCustomerDetails && Number(selectedCustomerDetails.total_payments) > 0 && formData.use_customer_credit && (
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)',
+              borderRadius: '8px', padding: '8px 14px', marginBottom: '14px', fontSize: '0.84rem'
+            }}>
+              <span style={{ color: 'var(--success)', fontWeight: 700 }}>
+                💳 مغطى من الرصيد الدائن: {Math.min(Number(selectedCustomerDetails.total_payments), invoiceTotal).toFixed(2)} ج.م
+              </span>
+              {invoiceTotal > Number(selectedCustomerDetails.total_payments) && (
+                <span style={{ marginRight: '10px', color: '#b91c1c', fontWeight: 600 }}>
+                  (المتبقي المطلوب سداده أو كمديونية: {(invoiceTotal - Number(selectedCustomerDetails.total_payments)).toFixed(2)} ج.م)
+                </span>
+              )}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: '16px' }}>
             <div className="form-group" style={{ flex: 1 }}>
               <label className="form-label">مبلغ نقدي مدفوع الآن (اختياري)</label>
@@ -642,28 +858,107 @@ const SalesPage = () => {
                 placeholder="في حال استلام نقدية ستدخل الخزينة فوراً"
               />
               {Number(formData.paid_amount) > 0 && (
-                <span style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: '3px', display: 'block' }}>
-                  ✓ سيتم توريد {Number(formData.paid_amount).toFixed(2)} ج.م للخزينة فوراً.
-                </span>
+                <div style={{ marginTop: '4px' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--success)', display: 'block' }}>
+                    ✓ سيتم توريد {Number(formData.paid_amount).toFixed(2)} ج.م للخزينة فوراً.
+                  </span>
+                  {(() => {
+                    const creditToUse = (selectedCustomerDetails && Number(selectedCustomerDetails.total_payments) > 0 && formData.use_customer_credit)
+                      ? Math.min(Number(selectedCustomerDetails.total_payments), invoiceTotal)
+                      : 0;
+                    const netRequired = Math.max(0, invoiceTotal - creditToUse);
+                    const overpaid = Number(formData.paid_amount) > netRequired ? (Number(formData.paid_amount) - netRequired) : 0;
+                    if (overpaid > 0) {
+                      return (
+                        <span style={{ fontSize: '0.82rem', color: '#0284c7', marginTop: '3px', display: 'block', fontWeight: 600 }}>
+                          💡 سداد الفاتورة بالكامل ({netRequired.toFixed(2)} ج.م) + إضافة الباقي ({overpaid.toFixed(2)} ج.م) لرصيد العميل.
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()}
+                </div>
               )}
             </div>
 
-            {Number(formData.paid_amount) > 0 && (
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label">طريقة الدفع *</label>
-                <select
-                  className="form-select"
-                  value={formData.payment_type_id}
-                  onChange={(e) => setFormData(prev => ({ ...prev, payment_type_id: e.target.value }))}
-                >
-                  <option value="">-- اختر نوع الدفع --</option>
-                  {paymentTypes.map(pt => (
-                    <option key={pt.id} value={pt.id}>{pt.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
+              {Number(formData.paid_amount) > 0 && (
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label className="form-label">طريقة الدفع في الخزينة *</label>
+                  <select
+                    className="form-select"
+                    value={formData.payment_type_id}
+                    onChange={(e) => setFormData(prev => ({ ...prev, payment_type_id: e.target.value }))}
+                  >
+                    <option value="">-- اختر نوع الدفع --</option>
+                    {paymentTypes.map(pt => (
+                      <option key={pt.id} value={pt.id}>{pt.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Bank Receipt Upload for Sales */}
+            {(() => {
+              const selectedPT = paymentTypes.find(p => String(p.id) === String(formData.payment_type_id));
+              const isBank = selectedPT?.channel === 'bank';
+              if (!isBank || Number(formData.paid_amount) <= 0) return null;
+              return (
+                <div className="form-group" style={{
+                  background: 'rgba(217, 119, 6, 0.05)', border: '1.5px dashed #d97706',
+                  borderRadius: 10, padding: '12px 14px', marginBottom: 16
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <label className="form-label" style={{ margin: 0, color: '#92400e', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Landmark size={14} color="#d97706" /> صورة إيصال التحويل / الإيداع البنكي *
+                    </label>
+                    {formData.receipt_image && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData(p => ({ ...p, receipt_image: null }))}
+                        style={{
+                          background: '#fee2e2', color: '#dc2626', border: 'none',
+                          borderRadius: 6, padding: '2px 8px', fontSize: '0.72rem',
+                          fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4
+                        }}
+                      >
+                        <X size={12} /> حذف الصورة
+                      </button>
+                    )}
+                  </div>
+                  {formData.receipt_image ? (
+                    <div style={{ textAlign: 'center' }}>
+                      <img
+                        src={formData.receipt_image}
+                        alt="إيصال البنك"
+                        style={{ maxHeight: 150, maxWidth: '100%', borderRadius: 8, border: '1px solid #fed7aa', objectFit: 'contain' }}
+                      />
+                    </div>
+                  ) : (
+                    <label style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      padding: '12px', borderRadius: 8, background: '#fff', border: '1px dashed #cbd5e1',
+                      cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, color: '#b45309'
+                    }}>
+                      <Upload size={16} />
+                      انقر لاختيار صورة إيصال البنك
+                      <input
+                        type="file"
+                        accept="image/*"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = (ev) => setFormData(p => ({ ...p, receipt_image: ev.target.result }));
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+              );
+            })()}
 
           {/* Notes */}
           <div className="form-group">
@@ -694,6 +989,35 @@ const SalesPage = () => {
         title="تأكيد الحذف"
         message="هل أنت متأكد من حذف هذه الفاتورة؟ (سيتم استرجاع الكميات للمخزن وتحديث أرصدة العملاء تلقائياً)"
       />
+
+      {/* Print Invoice Modal */}
+      <PrintableInvoice
+        isOpen={isPrintModalOpen}
+        onClose={() => { setIsPrintModalOpen(false); setSelectedInvoiceForPrint(null); }}
+        sale={selectedInvoiceForPrint}
+      />
+
+      {/* Receipt Image Preview Modal */}
+      {selectedReceiptModal && (
+        <Modal isOpen={Boolean(selectedReceiptModal)} onClose={() => setSelectedReceiptModal(null)} title="صورة إيصال التحويل / الإيداع البنكي">
+          <div style={{ textAlign: 'center', padding: '10px' }}>
+            <img
+              src={selectedReceiptModal}
+              alt="إيصال المبيعات البنكي"
+              style={{ maxWidth: '100%', maxHeight: '65vh', borderRadius: '8px', border: '1px solid #e2e8f0', objectFit: 'contain' }}
+            />
+            <div style={{ marginTop: '16px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setSelectedReceiptModal(null)}
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 };

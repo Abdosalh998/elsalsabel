@@ -7,6 +7,159 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
  */
 
 /**
+ * GET /api/balances/customer-summary
+ * Returns one row per customer with aggregated totals (for Card View)
+ */
+const getCustomerSummary = async (req, res, next) => {
+  try {
+    const { branch_id } = req.user;
+    const { customer_ids, search, dateFrom, dateTo } = req.query;
+
+    let custWhere = 'WHERE c.branch_id = $1 AND c.is_active = true';
+    const custParams = [branch_id];
+    let custIndex = 2;
+
+    if (search) {
+      custWhere += ` AND c.name ILIKE $${custIndex}`;
+      custParams.push(`%${search}%`);
+      custIndex++;
+    }
+
+    if (customer_ids) {
+      const ids = Array.isArray(customer_ids) ? customer_ids : customer_ids.split(',');
+      custWhere += ` AND c.id = ANY($${custIndex}::int[])`;
+      custParams.push(ids.map(Number));
+      custIndex++;
+    }
+
+    // Date filter on balances join
+    let balanceJoinFilter = 'b.customer_id = c.id AND b.branch_id = $1';
+    if (dateFrom && dateTo) {
+      balanceJoinFilter += ` AND b.date BETWEEN $${custIndex} AND $${custIndex + 1}`;
+      custParams.push(dateFrom, dateTo);
+      custIndex += 2;
+    } else if (dateFrom) {
+      balanceJoinFilter += ` AND b.date >= $${custIndex}`;
+      custParams.push(dateFrom);
+      custIndex++;
+    } else if (dateTo) {
+      balanceJoinFilter += ` AND b.date <= $${custIndex}`;
+      custParams.push(dateTo);
+      custIndex++;
+    }
+
+    const finalQuery = `
+      SELECT 
+        c.id as customer_id,
+        c.name as customer_name,
+        c.phone as customer_phone,
+        COALESCE(SUM(b.invoice_amount), 0) AS total_invoiced,
+        COALESCE(SUM(b.paid_amount), 0) AS total_paid,
+        -- Gross live debt and credit from customers table
+        COALESCE(c.customer_total, 0) AS customer_debt,
+        COALESCE(c.total_payments, 0) AS customer_credit,
+        -- Net live debt and credit from customers table
+        CASE WHEN c.customer_total > c.total_payments THEN (c.customer_total - c.total_payments) ELSE 0 END AS total_debt,
+        CASE WHEN c.total_payments > c.customer_total THEN (c.total_payments - c.customer_total) ELSE 0 END AS total_credit,
+        COUNT(b.id) AS transactions_count,
+        MAX(b.date) AS last_transaction_date
+      FROM customers c
+      LEFT JOIN customer_balances b ON ${balanceJoinFilter}
+      ${custWhere}
+      GROUP BY c.id, c.name, c.phone, c.customer_total, c.total_payments
+      ORDER BY 
+        CASE WHEN (c.customer_total - c.total_payments) > 0 THEN (c.customer_total - c.total_payments) ELSE 0 END DESC,
+        c.name ASC
+    `;
+
+    const result = await pool.query(finalQuery, custParams);
+
+    // Overall summary across active customers
+    const summaryQuery = `
+      SELECT
+        COALESCE(SUM(CASE WHEN c.customer_total > c.total_payments THEN (c.customer_total - c.total_payments) ELSE 0 END), 0) AS grand_total_debt,
+        COALESCE(SUM(CASE WHEN c.total_payments > c.customer_total THEN (c.total_payments - c.customer_total) ELSE 0 END), 0) AS grand_total_credit,
+        COUNT(DISTINCT c.id) FILTER (WHERE c.customer_total > 0 OR c.total_payments > 0) AS customers_with_transactions
+      FROM customers c
+      WHERE c.branch_id = $1 AND c.is_active = true
+    `;
+    const summaryResult = await pool.query(summaryQuery, [branch_id]);
+
+    return sendSuccess(res, {
+      customers: result.rows,
+      summary: summaryResult.rows[0],
+      total: result.rows.length
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/balances/customer/:customerId/transactions
+ * Returns all transactions for a specific customer
+ */
+const getCustomerTransactions = async (req, res, next) => {
+  try {
+    const { branch_id } = req.user;
+    const { customerId } = req.params;
+    const { dateFrom, dateTo } = req.query;
+
+    let whereClause = 'WHERE b.branch_id = $1 AND b.customer_id = $2';
+    const params = [branch_id, customerId];
+    let paramIndex = 3;
+
+    if (dateFrom && dateTo) {
+      whereClause += ` AND b.date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+      params.push(dateFrom, dateTo);
+      paramIndex += 2;
+    } else if (dateFrom) {
+      whereClause += ` AND b.date >= $${paramIndex}`;
+      params.push(dateFrom);
+      paramIndex++;
+    } else if (dateTo) {
+      whereClause += ` AND b.date <= $${paramIndex}`;
+      params.push(dateTo);
+      paramIndex++;
+    }
+
+    const result = await pool.query(`
+      SELECT b.*, c.name as customer_name
+      FROM customer_balances b
+      JOIN customers c ON c.id = b.customer_id
+      ${whereClause}
+      ORDER BY b.date DESC, b.created_at DESC
+    `, params);
+
+    // Customer summary totals
+    const totalsRes = await pool.query(`
+      SELECT
+        c.name as customer_name,
+        c.phone as customer_phone,
+        COALESCE(SUM(b.invoice_amount), 0) AS total_invoiced,
+        COALESCE(SUM(b.paid_amount), 0) AS total_paid,
+        COALESCE(c.customer_total, 0) AS customer_debt,
+        COALESCE(c.total_payments, 0) AS customer_credit,
+        CASE WHEN c.customer_total > c.total_payments THEN (c.customer_total - c.total_payments) ELSE 0 END AS total_debt,
+        CASE WHEN c.total_payments > c.customer_total THEN (c.total_payments - c.customer_total) ELSE 0 END AS total_credit,
+        COUNT(b.id) AS transactions_count
+      FROM customers c
+      LEFT JOIN customer_balances b ON b.customer_id = c.id AND b.branch_id = $1
+      WHERE c.id = $2
+      GROUP BY c.id, c.name, c.phone, c.customer_total, c.total_payments
+    `, [branch_id, customerId]);
+
+    return sendSuccess(res, {
+      transactions: result.rows,
+      customerInfo: totalsRes.rows[0] || null,
+      total: result.rows.length
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET /api/balances
  */
 const getBalances = async (req, res, next) => {
@@ -210,4 +363,4 @@ const deleteBalance = async (req, res, next) => {
   }
 };
 
-module.exports = { getBalances, addBalance, updateBalance, deleteBalance };
+module.exports = { getBalances, addBalance, updateBalance, deleteBalance, getCustomerSummary, getCustomerTransactions };

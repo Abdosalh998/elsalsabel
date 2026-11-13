@@ -29,6 +29,16 @@ export const customerService = {
   getOutstandingInvoices: async (customerId) => {
     const { data } = await api.get(`/customers/${customerId}/outstanding`);
     return data;
+  },
+
+  adjustBalance: async (id, adjustData) => {
+    const { data } = await api.post(`/customers/${id}/adjust-balance`, adjustData);
+    return data;
+  },
+
+  getBalanceHistory: async (id) => {
+    const { data } = await api.get(`/customers/${id}/balance-history`);
+    return data;
   }
 };
 

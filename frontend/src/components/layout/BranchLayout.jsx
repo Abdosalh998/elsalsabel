@@ -14,11 +14,14 @@ const BranchLayout = () => {
     const path = location.pathname;
     if (path.includes('/customers')) return 'إدارة العملاء';
     if (path.includes('/balances')) return 'أرصدة العملاء';
-    if (path.includes('/inventory')) return 'المخازن';
+    if (path.includes('/inventory') || path.includes('/purchases')) return 'المخزن';
     if (path.includes('/sales')) return 'المبيعات';
+    if (path.includes('/returns')) return 'المرتجعات';
     if (path.includes('/treasury')) return 'الخزينة';
     if (path.includes('/expenses')) return 'المصروفات';
-    if (path.includes('/purchases')) return 'المشتريات';
+    if (path.includes('/transfers')) return 'التحويلات';
+    if (path.includes('/reports')) return 'التقارير';
+    if (path.includes('/pos')) return '⚡ المتحكم الرئيسي';
     return 'الرئيسية';
   };
 
@@ -27,7 +30,7 @@ const BranchLayout = () => {
   return (
     <div className="app-layout">
       <Sidebar isOpen={isSidebarOpen} toggleSidebar={toggleSidebar} />
-      
+
       <main className="main-content">
         <Header toggleSidebar={toggleSidebar} title={getPageTitle()} />
         <div className="page-wrapper">

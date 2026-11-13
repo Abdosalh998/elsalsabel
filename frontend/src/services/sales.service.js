@@ -6,6 +6,11 @@ export const salesService = {
     return data;
   },
 
+  getSaleById: async (id) => {
+    const { data } = await api.get(`/sales/${id}`);
+    return data;
+  },
+
   addSale: async (saleData) => {
     const { data } = await api.post('/sales', saleData);
     return data;

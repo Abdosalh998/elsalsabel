@@ -13,6 +13,7 @@ const getCustomers = async (req, res, next) => {
 
     let query = `
       SELECT id, name, phone, total_payments, customer_total, created_at,
+             total_payments as current_credit,
              (customer_total - total_payments) as remaining_balance
       FROM customers
       WHERE branch_id = $1 AND is_active = true
@@ -21,15 +22,29 @@ const getCustomers = async (req, res, next) => {
     let paramIndex = 2;
 
     if (name) {
-      query += ` AND name ILIKE $${paramIndex}`;
-      params.push(`%${name}%`);
-      paramIndex++;
+      const values = name.split(',').map(v => v.trim()).filter(Boolean);
+      if (values.length === 1) {
+        query += ` AND name ILIKE $${paramIndex}`;
+        params.push(`%${values[0]}%`);
+        paramIndex++;
+      } else {
+        query += ` AND name = ANY($${paramIndex}::text[])`;
+        params.push(values);
+        paramIndex++;
+      }
     }
 
     if (phone) {
-      query += ` AND phone ILIKE $${paramIndex}`;
-      params.push(`%${phone}%`);
-      paramIndex++;
+      const values = phone.split(',').map(v => v.trim()).filter(Boolean);
+      if (values.length === 1) {
+        query += ` AND phone ILIKE $${paramIndex}`;
+        params.push(`%${values[0]}%`);
+        paramIndex++;
+      } else {
+        query += ` AND phone = ANY($${paramIndex}::text[])`;
+        params.push(values);
+        paramIndex++;
+      }
     }
 
     // balance_type: 'debtor' = (customer_total - total_payments) > 0
@@ -54,15 +69,29 @@ const getCustomers = async (req, res, next) => {
     let countIndex = 2;
 
     if (name) {
-      countQuery += ` AND name ILIKE $${countIndex}`;
-      countParams.push(`%${name}%`);
-      countIndex++;
+      const values = name.split(',').map(v => v.trim()).filter(Boolean);
+      if (values.length === 1) {
+        countQuery += ` AND name ILIKE $${countIndex}`;
+        countParams.push(`%${values[0]}%`);
+        countIndex++;
+      } else {
+        countQuery += ` AND name = ANY($${countIndex}::text[])`;
+        countParams.push(values);
+        countIndex++;
+      }
     }
-    
+
     if (phone) {
-      countQuery += ` AND phone ILIKE $${countIndex}`;
-      countParams.push(`%${phone}%`);
-      countIndex++;
+      const values = phone.split(',').map(v => v.trim()).filter(Boolean);
+      if (values.length === 1) {
+        countQuery += ` AND phone ILIKE $${countIndex}`;
+        countParams.push(`%${values[0]}%`);
+        countIndex++;
+      } else {
+        countQuery += ` AND phone = ANY($${countIndex}::text[])`;
+        countParams.push(values);
+        countIndex++;
+      }
     }
 
     if (balance_type === 'debtor') {
@@ -205,33 +234,158 @@ const getOutstandingInvoices = async (req, res, next) => {
 
     const result = await pool.query(
       `SELECT 
+         s.id,
          s.invoice_number,
          s.date,
          s.unit_price,
          s.quantity,
-         cb.invoice_amount,
-         cb.paid_amount,
-         (cb.invoice_amount - cb.paid_amount) AS remaining,
+         s.total AS invoice_amount,
+         s.paid_amount,
+         s.remaining_balance AS remaining,
          s.notes
-       FROM customer_balances cb
-       JOIN sales s ON s.id = cb.source_id AND cb.source_type = 'sales'
-       WHERE cb.customer_id = $1 
-         AND cb.branch_id = $2
-         AND (cb.invoice_amount - cb.paid_amount) > 0
-       ORDER BY s.date ASC`,
+       FROM sales s
+       WHERE s.customer_id = $1 
+         AND s.branch_id = $2
+         AND s.remaining_balance > 0
+       ORDER BY s.date ASC, s.id ASC`,
       [id, branch_id]
     );
 
-    const totalDebt = result.rows.reduce((sum, r) => sum + Number(r.remaining), 0);
+    const custRes = await pool.query(
+      `SELECT total_payments, customer_total FROM customers WHERE id = $1`,
+      [id]
+    );
+    const currentCredit = custRes.rows[0] ? Number(custRes.rows[0].total_payments || 0) : 0;
+    const currentTotalDebt = custRes.rows[0] ? Number(custRes.rows[0].customer_total || 0) : 0;
+
+    const totalInvoiceDebt = result.rows.reduce((sum, r) => sum + Number(r.remaining), 0);
 
     return sendSuccess(res, {
       invoices: result.rows,
-      total_debt: totalDebt
+      total_debt: totalInvoiceDebt || currentTotalDebt,
+      current_credit: currentCredit,
+      current_debt: currentTotalDebt || totalInvoiceDebt,
+      current_balance: currentCredit - currentTotalDebt,
+      unpaid_invoices_count: result.rows.length
     });
   } catch (err) {
     next(err);
   }
 };
 
-module.exports = { getCustomers, addCustomer, updateCustomer, deleteCustomer, getUniqueValues, getOutstandingInvoices };
+/**
+ * POST /api/customers/:id/adjust-balance
+ * Adjust customer balance directly (credit [له] or debit [عليه])
+ */
+const adjustCustomerBalance = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { branch_id } = req.user;
+    const { id } = req.params;
+    const { type, amount, reason, date } = req.body;
+
+    if (!type || !['credit', 'debit'].includes(type)) {
+      return sendError(res, 'نوع التعديل غير صحيح. يجب أن يكون credit (له) أو debit (عليه)', 400);
+    }
+
+    const numAmount = parseFloat(amount);
+    if (!numAmount || numAmount <= 0) {
+      return sendError(res, 'يجب إدخال مبلغ صحيح أكبر من الصفر', 400);
+    }
+
+    const custCheck = await client.query(
+      `SELECT * FROM customers WHERE id = $1 AND branch_id = $2 FOR UPDATE`,
+      [id, branch_id]
+    );
+
+    if (!custCheck.rows.length) {
+      return sendError(res, 'العميل غير موجود', 404);
+    }
+
+    const adjDate = date || new Date().toISOString().split('T')[0];
+
+    // Record the adjustment
+    const adjRes = await client.query(
+      `INSERT INTO customer_balance_adjustments
+        (branch_id, customer_id, date, type, amount, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [branch_id, id, adjDate, type, numAmount, reason || '']
+    );
+
+    // Update customer balance:
+    // credit (له) -> increase total_payments
+    // debit (عليه) -> increase customer_total
+    let updateQuery = '';
+    if (type === 'credit') {
+      updateQuery = `
+        UPDATE customers
+        SET total_payments = total_payments + $1,
+            updated_at = NOW()
+        WHERE id = $2
+        RETURNING *, total_payments as current_credit, (customer_total - total_payments) as remaining_balance
+      `;
+    } else {
+      updateQuery = `
+        UPDATE customers
+        SET customer_total = customer_total + $1,
+            updated_at = NOW()
+        WHERE id = $2
+        RETURNING *, total_payments as current_credit, (customer_total - total_payments) as remaining_balance
+      `;
+    }
+
+    const updatedCust = await client.query(updateQuery, [numAmount, id]);
+
+    await client.query('COMMIT');
+
+    const msg = type === 'credit'
+      ? `تمت إضافة رصيد ${numAmount.toFixed(2)} ج.م لصالح العميل بنجاح`
+      : `تمت إضافة مديونية ${numAmount.toFixed(2)} ج.م على العميل بنجاح`;
+
+    return sendSuccess(res, {
+      customer: updatedCust.rows[0],
+      adjustment: adjRes.rows[0]
+    }, 200, msg);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * GET /api/customers/:id/balance-history
+ * Get customer balance adjustments history
+ */
+const getCustomerBalanceHistory = async (req, res, next) => {
+  try {
+    const { branch_id } = req.user;
+    const { id } = req.params;
+
+    const result = await pool.query(
+      `SELECT * FROM customer_balance_adjustments
+       WHERE customer_id = $1 AND branch_id = $2
+       ORDER BY date DESC, id DESC`,
+      [id, branch_id]
+    );
+
+    return sendSuccess(res, result.rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = {
+  getCustomers,
+  addCustomer,
+  updateCustomer,
+  deleteCustomer,
+  getUniqueValues,
+  getOutstandingInvoices,
+  adjustCustomerBalance,
+  getCustomerBalanceHistory,
+};
 
