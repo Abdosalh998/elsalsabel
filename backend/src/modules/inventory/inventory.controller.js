@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 
 /**
  * GET /api/inventory
@@ -346,24 +346,26 @@ const deleteInventory = async (req, res, next) => {
  */
 const getUniqueValues = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
+    const whereBranch = branch_id ? `WHERE branch_id = $1 AND` : `WHERE`;
+    const params = branch_id ? [branch_id] : [];
 
     const productsRes = await pool.query(
       `SELECT DISTINCT product FROM (
-        SELECT product FROM inventory WHERE branch_id = $1 AND product IS NOT NULL AND product != ''
+        SELECT product FROM inventory ${whereBranch} product IS NOT NULL AND product != ''
         UNION
-        SELECT product FROM inventory_supplies WHERE branch_id = $1 AND product IS NOT NULL AND product != ''
+        SELECT product FROM inventory_supplies ${whereBranch} product IS NOT NULL AND product != ''
       ) p ORDER BY product`,
-      [branch_id]
+      params
     );
 
     const companiesRes = await pool.query(
       `SELECT DISTINCT company FROM (
-        SELECT company FROM inventory WHERE branch_id = $1 AND company IS NOT NULL AND company != ''
+        SELECT company FROM inventory ${whereBranch} company IS NOT NULL AND company != ''
         UNION
-        SELECT company FROM inventory_supplies WHERE branch_id = $1 AND company IS NOT NULL AND company != ''
+        SELECT company FROM inventory_supplies ${whereBranch} company IS NOT NULL AND company != ''
       ) c ORDER BY company`,
-      [branch_id]
+      params
     );
 
     return sendSuccess(res, {
@@ -481,7 +483,9 @@ const getInventorySupplies = async (req, res, next) => {
  */
 const getGroupedInventory = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
+    const whereBranch = branch_id ? `WHERE branch_id = $1 AND` : `WHERE`;
+    const params = branch_id ? [branch_id] : [];
     const result = await pool.query(`
       SELECT 
         TRIM(product) AS product,
@@ -507,10 +511,10 @@ const getGroupedInventory = async (req, res, next) => {
           ) ORDER BY date ASC, id ASC
         ) AS company_items
       FROM inventory
-      WHERE branch_id = $1 AND (weight_quantity - issued_quantity) > 0
+      ${whereBranch} (weight_quantity - issued_quantity) > 0
       GROUP BY TRIM(product)
       ORDER BY product ASC
-    `, [branch_id]);
+    `, params);
 
     return sendSuccess(res, result.rows);
   } catch (err) {

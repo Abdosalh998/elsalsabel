@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 
 /**
  * GET /api/purchases
@@ -7,13 +7,13 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
  */
 const getPurchases = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
     const { customer_id, product, dateFrom, dateTo, material_type, page = 1, limit = 50 } = req.query;
     const { offset } = paginate(page, limit);
 
-    let where = `WHERE p.branch_id = $1`;
-    const params = [branch_id];
-    let idx = 2;
+    let where = branch_id ? `WHERE p.branch_id = $1` : `WHERE 1=1`;
+    const params = branch_id ? [branch_id] : [];
+    let idx = params.length + 1;
 
     if (customer_id) {
       const ids = customer_id.split(',').map(v => v.trim()).filter(Boolean);
@@ -587,14 +587,17 @@ const deletePurchase = async (req, res, next) => {
  */
 const getUniqueValues = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
+    const whereBranch = branch_id ? `WHERE branch_id=$1 AND` : `WHERE`;
+    const params = branch_id ? [branch_id] : [];
+
     const productsRes = await pool.query(
-      `SELECT DISTINCT product FROM purchases WHERE branch_id=$1 AND product IS NOT NULL AND product!='' ORDER BY product`,
-      [branch_id]
+      `SELECT DISTINCT product FROM purchases ${whereBranch} product IS NOT NULL AND product!='' ORDER BY product`,
+      params
     );
     const companiesRes = await pool.query(
-      `SELECT DISTINCT company FROM purchases WHERE branch_id=$1 AND company IS NOT NULL AND company!='' ORDER BY company`,
-      [branch_id]
+      `SELECT DISTINCT company FROM purchases ${whereBranch} company IS NOT NULL AND company!='' ORDER BY company`,
+      params
     );
     return sendSuccess(res, {
       products:  productsRes.rows.map(r => r.product),

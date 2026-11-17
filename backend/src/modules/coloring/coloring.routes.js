@@ -8,12 +8,14 @@ const {
   updateColoringOrder,
   deleteColoringOrder,
   getInventoryForColoring,
+  getAllInventoryItems,
 } = require('./coloring.controller');
 const { authenticate } = require('../../middleware/auth');
 
 router.use(authenticate);
 
 router.get('/inventory-items', getInventoryForColoring);
+router.get('/all-inventory-items', getAllInventoryItems);
 router.get('/', getColoringOrders);
 router.post('/', addColoringOrder);
 router.post('/:id/return', returnFromColoring);

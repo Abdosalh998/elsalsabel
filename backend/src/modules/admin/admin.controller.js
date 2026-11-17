@@ -188,42 +188,97 @@ const getAdminStats = async (req, res, next) => {
 const getBranchSales = async (req, res, next) => {
   try {
     const { branchId } = req.params;
-    const { page = 1, limit = 50, dateFrom, dateTo } = req.query;
+    const { page = 1, limit = 100, dateFrom, dateTo, search } = req.query;
     const { offset } = paginate(page, limit);
     let where = `WHERE s.branch_id = $1`;
     const params = [branchId];
     let idx = 2;
     if (dateFrom) { where += ` AND s.date >= $${idx++}`; params.push(dateFrom); }
-    if (dateTo)   { where += ` AND s.date <= $${idx++}`; params.push(dateTo); }
+    if (dateTo) { where += ` AND s.date <= $${idx++}`; params.push(dateTo); }
+    if (search) {
+      where += ` AND (c.name ILIKE $${idx} OR i.product ILIKE $${idx} OR s.invoice_number::text ILIKE $${idx})`;
+      params.push(`%${search.trim()}%`);
+      idx++;
+    }
+
     const result = await pool.query(
       `SELECT s.*, c.name as customer_name, i.product FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN inventory i ON i.id = s.inventory_id
-       ${where} ORDER BY s.date DESC, s.id DESC LIMIT $${idx} OFFSET $${idx+1}`,
+       ${where} ORDER BY s.date DESC, s.id DESC LIMIT $${idx} OFFSET $${idx + 1}`,
       [...params, limit, offset]
     );
-    const count = await pool.query(`SELECT COUNT(*) FROM sales s ${where}`, params);
-    return sendSuccess(res, { sales: result.rows, total: parseInt(count.rows[0].count) });
+
+    const statsRes = await pool.query(
+      `SELECT 
+         COUNT(*) as count,
+         COALESCE(SUM(s.total), 0) as total_amount,
+         COALESCE(SUM(s.paid_amount), 0) as total_paid,
+         COALESCE(SUM(s.remaining_balance), 0) as total_remaining,
+         COALESCE(SUM(s.settlement_amount), 0) as total_settlements
+       FROM sales s
+       LEFT JOIN customers c ON c.id = s.customer_id
+       LEFT JOIN inventory i ON i.id = s.inventory_id
+       ${where}`,
+      params
+    );
+
+    return sendSuccess(res, {
+      sales: result.rows,
+      total: parseInt(statsRes.rows[0].count, 10),
+      summary: {
+        total_amount: parseFloat(statsRes.rows[0].total_amount),
+        total_paid: parseFloat(statsRes.rows[0].total_paid),
+        total_remaining: parseFloat(statsRes.rows[0].total_remaining),
+        total_settlements: parseFloat(statsRes.rows[0].total_settlements),
+      }
+    });
   } catch (err) { next(err); }
 };
 
 const getBranchTreasury = async (req, res, next) => {
   try {
     const { branchId } = req.params;
+    const { dateFrom, dateTo } = req.query;
+
+    let tDateWhere = '';
+    let eDateWhere = '';
+    let pDateWhere = '';
+    let trfDateWhere = '';
+    const dateParams = [];
+    let pIdx = 2;
+
+    if (dateFrom) {
+      tDateWhere += ` AND date >= $${pIdx}`;
+      eDateWhere += ` AND date >= $${pIdx}`;
+      pDateWhere += ` AND date >= $${pIdx}`;
+      trfDateWhere += ` AND t.created_at::date >= $${pIdx}`;
+      dateParams.push(dateFrom);
+      pIdx++;
+    }
+    if (dateTo) {
+      tDateWhere += ` AND date <= $${pIdx}`;
+      eDateWhere += ` AND date <= $${pIdx}`;
+      pDateWhere += ` AND date <= $${pIdx}`;
+      trfDateWhere += ` AND t.created_at::date <= $${pIdx}`;
+      dateParams.push(dateTo);
+      pIdx++;
+    }
+
     // Treasury records (payments received)
     const tRes = await pool.query(
-      `SELECT id, date, amount, notes, 'treasury' as source, created_at FROM treasury WHERE branch_id=$1 ORDER BY date DESC, id DESC`,
-      [branchId]
+      `SELECT id, date, amount, notes, channel, 'treasury' as source, created_at FROM treasury WHERE branch_id=$1 ${tDateWhere} ORDER BY date DESC, id DESC`,
+      [branchId, ...dateParams]
     );
     // Expenses (money out)
     const eRes = await pool.query(
-      `SELECT id, date, amount, description as notes, 'expense' as source, created_at FROM expenses WHERE branch_id=$1`,
-      [branchId]
+      `SELECT id, date, amount, description as notes, channel, 'expense' as source, created_at FROM expenses WHERE branch_id=$1 ${eDateWhere}`,
+      [branchId, ...dateParams]
     );
     // Purchases paid from treasury
     const pRes = await pool.query(
-      `SELECT id, date, treasury_balance as amount, CONCAT('مشتريات: ', product) as notes, 'purchase' as source, created_at FROM purchases WHERE branch_id=$1 AND treasury_balance > 0`,
-      [branchId]
+      `SELECT id, date, treasury_balance as amount, CONCAT('مشتريات: ', product) as notes, channel, 'purchase' as source, created_at FROM purchases WHERE branch_id=$1 AND treasury_balance > 0 ${pDateWhere}`,
+      [branchId, ...dateParams]
     );
 
     // Outgoing monetary transfers
@@ -231,8 +286,8 @@ const getBranchTreasury = async (req, res, next) => {
       `SELECT t.id, t.created_at as date, t.amount, CONCAT('تحويل صادر إلى فرع: ', to_b.name, ' - ', t.transfer_number) as notes, 'transfer_out' as source, t.created_at 
        FROM transfers t 
        JOIN branches to_b ON to_b.id = t.to_branch_id
-       WHERE t.from_branch_id=$1 AND t.type='monetary' AND t.status IN ('pending', 'completed')`,
-      [branchId]
+       WHERE t.from_branch_id=$1 AND t.type='monetary' AND t.status IN ('pending', 'completed') ${trfDateWhere}`,
+      [branchId, ...dateParams]
     );
 
     // Incoming monetary transfers
@@ -240,8 +295,8 @@ const getBranchTreasury = async (req, res, next) => {
       `SELECT t.id, t.created_at as date, t.amount, CONCAT('تحويل وارد من فرع: ', from_b.name, ' - ', t.transfer_number) as notes, 'transfer_in' as source, t.created_at 
        FROM transfers t 
        JOIN branches from_b ON from_b.id = t.from_branch_id
-       WHERE t.to_branch_id=$1 AND t.type='monetary' AND t.status='completed'`,
-      [branchId]
+       WHERE t.to_branch_id=$1 AND t.type='monetary' AND t.status='completed' ${trfDateWhere}`,
+      [branchId, ...dateParams]
     );
 
     const totalIn = tRes.rows.reduce((s, r) => s + Number(r.amount), 0)
@@ -268,58 +323,345 @@ const getBranchTreasury = async (req, res, next) => {
 const getBranchCustomers = async (req, res, next) => {
   try {
     const { branchId } = req.params;
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 100, search } = req.query;
     const { offset } = paginate(page, limit);
+    let where = `WHERE branch_id=$1 AND is_active=true`;
+    const params = [branchId];
+    let idx = 2;
+    if (search) {
+      where += ` AND (name ILIKE $${idx} OR phone ILIKE $${idx})`;
+      params.push(`%${search.trim()}%`);
+      idx++;
+    }
+
     const result = await pool.query(
       `SELECT id, name, phone, customer_total, total_payments,
               (customer_total - total_payments) as remaining_balance
-       FROM customers WHERE branch_id=$1 AND is_active=true
-       ORDER BY name ASC LIMIT $2 OFFSET $3`,
-      [branchId, limit, offset]
+       FROM customers ${where}
+       ORDER BY (customer_total - total_payments) DESC, name ASC LIMIT $${idx} OFFSET $${idx + 1}`,
+      [...params, limit, offset]
     );
-    const count = await pool.query(`SELECT COUNT(*) FROM customers WHERE branch_id=$1 AND is_active=true`, [branchId]);
-    return sendSuccess(res, { customers: result.rows, total: parseInt(count.rows[0].count) });
+    const countRes = await pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(customer_total - total_payments), 0) as total_debt FROM customers ${where}`, params);
+    return sendSuccess(res, {
+      customers: result.rows,
+      total: parseInt(countRes.rows[0].count, 10),
+      total_debt: parseFloat(countRes.rows[0].total_debt)
+    });
   } catch (err) { next(err); }
 };
 
 const getBranchPurchases = async (req, res, next) => {
   try {
     const { branchId } = req.params;
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 100, dateFrom, dateTo, search } = req.query;
     const { offset } = paginate(page, limit);
+    let where = `WHERE p.branch_id=$1`;
+    const params = [branchId];
+    let idx = 2;
+    if (dateFrom) { where += ` AND p.date >= $${idx++}`; params.push(dateFrom); }
+    if (dateTo) { where += ` AND p.date <= $${idx++}`; params.push(dateTo); }
+    if (search) {
+      where += ` AND (p.product ILIKE $${idx} OR c.name ILIKE $${idx})`;
+      params.push(`%${search.trim()}%`);
+      idx++;
+    }
+
     const result = await pool.query(
       `SELECT p.*, c.name as supplier_name FROM purchases p
        LEFT JOIN customers c ON c.id = p.customer_id
-       WHERE p.branch_id=$1 ORDER BY p.date DESC, p.id DESC LIMIT $2 OFFSET $3`,
-      [branchId, limit, offset]
+       ${where} ORDER BY p.date DESC, p.id DESC LIMIT $${idx} OFFSET $${idx + 1}`,
+      [...params, limit, offset]
     );
-    const count = await pool.query(`SELECT COUNT(*) FROM purchases WHERE branch_id=$1`, [branchId]);
-    return sendSuccess(res, { purchases: result.rows, total: parseInt(count.rows[0].count) });
+    const countRes = await pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(p.total), 0) as total_amount FROM purchases p LEFT JOIN customers c ON c.id = p.customer_id ${where}`, params);
+    return sendSuccess(res, {
+      purchases: result.rows,
+      total: parseInt(countRes.rows[0].count, 10),
+      summary: { total_amount: parseFloat(countRes.rows[0].total_amount) }
+    });
   } catch (err) { next(err); }
 };
 
 const getBranchExpenses = async (req, res, next) => {
   try {
     const { branchId } = req.params;
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 100, dateFrom, dateTo, search } = req.query;
     const { offset } = paginate(page, limit);
+    let where = `WHERE branch_id=$1`;
+    const params = [branchId];
+    let idx = 2;
+    if (dateFrom) { where += ` AND date >= $${idx++}`; params.push(dateFrom); }
+    if (dateTo) { where += ` AND date <= $${idx++}`; params.push(dateTo); }
+    if (search) {
+      where += ` AND (description ILIKE $${idx} OR notes ILIKE $${idx})`;
+      params.push(`%${search.trim()}%`);
+      idx++;
+    }
+
     const result = await pool.query(
-      `SELECT * FROM expenses WHERE branch_id=$1 ORDER BY date DESC, id DESC LIMIT $2 OFFSET $3`,
-      [branchId, limit, offset]
+      `SELECT * FROM expenses ${where} ORDER BY date DESC, id DESC LIMIT $${idx} OFFSET $${idx + 1}`,
+      [...params, limit, offset]
     );
-    const count = await pool.query(`SELECT COUNT(*) FROM expenses WHERE branch_id=$1`, [branchId]);
-    return sendSuccess(res, { expenses: result.rows, total: parseInt(count.rows[0].count) });
+    const countRes = await pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total_amount FROM expenses ${where}`, params);
+    return sendSuccess(res, {
+      expenses: result.rows,
+      total: parseInt(countRes.rows[0].count, 10),
+      summary: { total_amount: parseFloat(countRes.rows[0].total_amount) }
+    });
   } catch (err) { next(err); }
 };
 
 const getBranchInventory = async (req, res, next) => {
   try {
     const { branchId } = req.params;
+    const { search, available_only } = req.query;
+    let where = `WHERE branch_id=$1`;
+    const params = [branchId];
+    let idx = 2;
+    if (search) {
+      where += ` AND (product ILIKE $${idx} OR company ILIKE $${idx})`;
+      params.push(`%${search.trim()}%`);
+      idx++;
+    }
+    if (available_only === 'true') {
+      where += ` AND (weight_quantity - COALESCE(issued_quantity, 0)) > 0`;
+    }
+
     const result = await pool.query(
-      `SELECT * FROM inventory WHERE branch_id=$1 ORDER BY date DESC, id DESC`,
-      [branchId]
+      `SELECT *,
+         COALESCE(weight_quantity - COALESCE(issued_quantity, 0), 0) as available_weight,
+         COALESCE(count - COALESCE(issued_rolls, 0), 0) as available_rolls
+       FROM inventory ${where} ORDER BY date DESC, id DESC`,
+      params
     );
-    return sendSuccess(res, { inventory: result.rows });
+
+    const statsRes = await pool.query(
+      `SELECT 
+         COUNT(*) as total_items,
+         COALESCE(SUM(weight_quantity), 0) as total_weight,
+         COALESCE(SUM(weight_quantity - COALESCE(issued_quantity, 0)), 0) as total_available_weight,
+         COALESCE(SUM(total), 0) as total_inventory_value
+       FROM inventory ${where}`,
+      params
+    );
+
+    return sendSuccess(res, {
+      inventory: result.rows,
+      summary: {
+        total_items: parseInt(statsRes.rows[0].total_items, 10),
+        total_weight: parseFloat(statsRes.rows[0].total_weight),
+        total_available_weight: parseFloat(statsRes.rows[0].total_available_weight),
+        total_inventory_value: parseFloat(statsRes.rows[0].total_inventory_value),
+      }
+    });
+  } catch (err) { next(err); }
+};
+
+// ─── NEW MONITORING MODULES FOR BRANCH ───────────────────────────────────────
+
+const getBranchColoring = async (req, res, next) => {
+  try {
+    const { branchId } = req.params;
+    const { dateFrom, dateTo, search, status } = req.query;
+    let where = `WHERE branch_id=$1`;
+    const params = [branchId];
+    let idx = 2;
+    if (dateFrom) { where += ` AND date >= $${idx++}`; params.push(dateFrom); }
+    if (dateTo) { where += ` AND date <= $${idx++}`; params.push(dateTo); }
+    if (status) { where += ` AND status = $${idx++}`; params.push(status); }
+    if (search) {
+      where += ` AND (product ILIKE $${idx} OR colored_product ILIKE $${idx} OR order_number ILIKE $${idx} OR color ILIKE $${idx} OR coloring_company ILIKE $${idx})`;
+      params.push(`%${search.trim()}%`);
+      idx++;
+    }
+
+    const result = await pool.query(
+      `SELECT * FROM coloring_orders ${where} ORDER BY date DESC, id DESC`,
+      params
+    );
+
+    const summaryRes = await pool.query(
+      `SELECT 
+         COUNT(*) as count,
+         COALESCE(SUM(issued_weight), 0) as total_issued_weight,
+         COALESCE(SUM(returned_weight), 0) as total_returned_weight,
+         COALESCE(SUM(weight_gain), 0) as total_gain,
+         COALESCE(SUM(coloring_cost), 0) as total_cost
+       FROM coloring_orders ${where}`,
+      params
+    );
+
+    return sendSuccess(res, {
+      coloring: result.rows,
+      summary: {
+        count: parseInt(summaryRes.rows[0].count, 10),
+        total_issued_weight: parseFloat(summaryRes.rows[0].total_issued_weight),
+        total_returned_weight: parseFloat(summaryRes.rows[0].total_returned_weight),
+        total_gain: parseFloat(summaryRes.rows[0].total_gain),
+        total_cost: parseFloat(summaryRes.rows[0].total_cost),
+      }
+    });
+  } catch (err) { next(err); }
+};
+
+const getBranchCustody = async (req, res, next) => {
+  try {
+    const { branchId } = req.params;
+    const { search, type, dateFrom, dateTo } = req.query;
+
+    let where = `WHERE c.branch_id = $1`;
+    const params = [branchId];
+    let idx = 2;
+    if (dateFrom) { where += ` AND c.date >= $${idx++}`; params.push(dateFrom); }
+    if (dateTo)   { where += ` AND c.date <= $${idx++}`; params.push(dateTo); }
+    if (type)     { where += ` AND c.type = $${idx++}`; params.push(type); }
+    if (search) {
+      where += ` AND (c.person_name ILIKE $${idx} OR c.phone ILIKE $${idx} OR c.receipt_number ILIKE $${idx} OR c.notes ILIKE $${idx})`;
+      params.push(`%${search.trim()}%`);
+      idx++;
+    }
+
+    const result = await pool.query(
+      `SELECT c.*, pt.name as payment_type_name
+       FROM custodies c
+       LEFT JOIN payment_types pt ON pt.id = c.payment_type_id
+       ${where}
+       ORDER BY c.date DESC, c.id DESC`,
+      params
+    );
+
+    const summaryRes = await pool.query(
+      `SELECT 
+         COUNT(*) as count,
+         COALESCE(SUM(CASE WHEN c.type = 'disbursement' THEN c.amount ELSE 0 END), 0) as total_disbursed,
+         COALESCE(SUM(CASE WHEN c.type = 'collection' THEN c.amount ELSE 0 END), 0) as total_collected
+       FROM custodies c
+       ${where}`,
+      params
+    );
+
+    const totalDisbursed = parseFloat(summaryRes.rows[0].total_disbursed);
+    const totalCollected = parseFloat(summaryRes.rows[0].total_collected);
+    const totalRemaining = totalDisbursed - totalCollected;
+
+    return sendSuccess(res, {
+      custody: result.rows,
+      summary: {
+        count: parseInt(summaryRes.rows[0].count, 10),
+        total_disbursed: totalDisbursed,
+        total_collected: totalCollected,
+        total_remaining: totalRemaining,
+      }
+    });
+  } catch (err) { next(err); }
+};
+
+const getBranchTransfers = async (req, res, next) => {
+  try {
+    const { branchId } = req.params;
+    const { type, status } = req.query;
+    let where = `WHERE (t.from_branch_id = $1 OR t.to_branch_id = $1)`;
+    const params = [branchId];
+    let idx = 2;
+    if (type) { where += ` AND t.type = $${idx++}`; params.push(type); }
+    if (status) { where += ` AND t.status = $${idx++}`; params.push(status); }
+
+    const result = await pool.query(
+      `SELECT t.*, 
+         fb.name as from_branch_name,
+         tb.name as to_branch_name
+       FROM transfers t
+       LEFT JOIN branches fb ON fb.id = t.from_branch_id
+       LEFT JOIN branches tb ON tb.id = t.to_branch_id
+       ${where}
+       ORDER BY t.created_at DESC`,
+      params
+    );
+
+    return sendSuccess(res, { transfers: result.rows });
+  } catch (err) { next(err); }
+};
+
+const getBranchSummary = async (req, res, next) => {
+  try {
+    const { branchId } = req.params;
+    const { dateFrom, dateTo } = req.query;
+
+    const bRes = await pool.query(`SELECT * FROM branches WHERE id = $1`, [branchId]);
+    if (!bRes.rows.length) return sendError(res, 'الفرع غير موجود', 404);
+    const branch = bRes.rows[0];
+
+    let sWhere = 'WHERE branch_id = $1';
+    let pWhere = 'WHERE branch_id = $1';
+    let eWhere = 'WHERE branch_id = $1';
+    const params = [branchId];
+    let idx = 2;
+    if (dateFrom) {
+      sWhere += ` AND date >= $${idx}`;
+      pWhere += ` AND date >= $${idx}`;
+      eWhere += ` AND date >= $${idx}`;
+      params.push(dateFrom);
+      idx++;
+    }
+    if (dateTo) {
+      sWhere += ` AND date <= $${idx}`;
+      pWhere += ` AND date <= $${idx}`;
+      eWhere += ` AND date <= $${idx}`;
+      params.push(dateTo);
+      idx++;
+    }
+
+    const [salesStats, purStats, expStats, debtStats, invStats, treasuryStats] = await Promise.all([
+      pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total, COALESCE(SUM(paid_amount), 0) as paid, COALESCE(SUM(remaining_balance), 0) as remaining FROM sales ${sWhere}`, params),
+      pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total FROM purchases ${pWhere}`, params),
+      pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM expenses ${eWhere}`, params),
+      pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(customer_total - total_payments), 0) as total_debt FROM customers WHERE branch_id = $1 AND is_active = true`, [branchId]),
+      pool.query(`SELECT COUNT(*) as items_count, COALESCE(SUM(weight_quantity - COALESCE(issued_quantity, 0)), 0) as total_avail_w, COALESCE(SUM(total), 0) as total_val FROM inventory WHERE branch_id = $1`, [branchId]),
+      pool.query(`
+        SELECT 
+          COALESCE((SELECT SUM(amount) FROM treasury WHERE branch_id = $1), 0)
+          - COALESCE((SELECT SUM(amount) FROM expenses WHERE branch_id = $1), 0)
+          - COALESCE((SELECT SUM(treasury_balance) FROM purchases WHERE branch_id = $1), 0)
+          - COALESCE((SELECT SUM(amount) FROM transfers WHERE from_branch_id = $1 AND type = 'monetary' AND status IN ('pending', 'completed')), 0)
+          + COALESCE((SELECT SUM(amount) FROM transfers WHERE to_branch_id = $1 AND type = 'monetary' AND status = 'completed'), 0)
+          as net_treasury
+      `, [branchId])
+    ]);
+
+    const totalSales = parseFloat(salesStats.rows[0].total);
+    const totalPurchases = parseFloat(purStats.rows[0].total);
+    const totalExpenses = parseFloat(expStats.rows[0].total);
+    const netProfitEst = totalSales - totalPurchases - totalExpenses;
+
+    return sendSuccess(res, {
+      branch,
+      sales: {
+        count: parseInt(salesStats.rows[0].count, 10),
+        total: totalSales,
+        paid: parseFloat(salesStats.rows[0].paid),
+        remaining: parseFloat(salesStats.rows[0].remaining),
+      },
+      purchases: {
+        count: parseInt(purStats.rows[0].count, 10),
+        total: totalPurchases,
+      },
+      expenses: {
+        count: parseInt(expStats.rows[0].count, 10),
+        total: totalExpenses,
+      },
+      treasury: {
+        net: parseFloat(treasuryStats.rows[0].net_treasury),
+      },
+      customers: {
+        count: parseInt(debtStats.rows[0].count, 10),
+        total_debt: parseFloat(debtStats.rows[0].total_debt),
+      },
+      inventory: {
+        items_count: parseInt(invStats.rows[0].items_count, 10),
+        total_avail_weight: parseFloat(invStats.rows[0].total_avail_w),
+        total_value: parseFloat(invStats.rows[0].total_val),
+      },
+      net_profit_estimate: netProfitEst,
+    });
   } catch (err) { next(err); }
 };
 
@@ -329,4 +671,5 @@ module.exports = {
   getAdminStats,
   getBranchSales, getBranchTreasury, getBranchCustomers,
   getBranchPurchases, getBranchExpenses, getBranchInventory,
+  getBranchColoring, getBranchCustody, getBranchTransfers, getBranchSummary,
 };

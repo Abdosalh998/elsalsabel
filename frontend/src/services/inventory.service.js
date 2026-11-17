@@ -21,8 +21,8 @@ export const inventoryService = {
     return data;
   },
 
-  getUniqueValues: async () => {
-    const { data } = await api.get('/inventory/unique');
+  getUniqueValues: async (params) => {
+    const { data } = await api.get('/inventory/unique', { params });
     return data;
   },
 

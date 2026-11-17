@@ -12,7 +12,7 @@ const getSales = async (req, res, next) => {
 
     let query = `
       SELECT s.id, s.invoice_number, s.date, s.customer_id, s.total, s.paid_amount,
-             s.remaining_balance, s.customer_credit, s.notes, s.created_at, s.updated_at,
+             s.remaining_balance, s.customer_credit, COALESCE(s.settlement_amount, 0) as settlement_amount, s.notes, s.created_at, s.updated_at,
              s.returns_total, s.gross_total,
              c.name as customer_name, c.phone as customer_phone,
              c.total_payments as customer_current_credit, c.customer_total as customer_current_debt,
@@ -225,7 +225,7 @@ const addSale = async (req, res, next) => {
     const { branch_id } = req.user;
     let {
       date, customer_id, customer_name, phone = '', saveNewCustomer,
-      paid_amount = 0, payment_type_id, notes = '',
+      paid_amount = 0, settlement_amount = 0, payment_type_id, notes = '',
       items = [], returns = [], add_remaining_to_balance = true,
       use_customer_credit = true, receipt_image = null
     } = req.body;
@@ -421,7 +421,12 @@ const addSale = async (req, res, next) => {
     const cashPaidToInvoice = Math.min(paid, remainingAfterCredit);
     const overpaidAmount = Math.max(0, paid - remainingAfterCredit);
     const invoicePaidAmount = creditUsed + cashPaidToInvoice;
-    const remainingInvoiceBalance = remainingAfterCredit - cashPaidToInvoice;
+    const remainingBeforeSettlement = remainingAfterCredit - cashPaidToInvoice;
+
+    // Settlement / Rounding logic (تسوية باقي الفاتورة / إسقاط الكسور)
+    const settlementVal = Math.max(0, Number(settlement_amount || 0));
+    const effectiveSettlement = Math.min(settlementVal, remainingBeforeSettlement);
+    const remainingInvoiceBalance = Math.max(0, remainingBeforeSettlement - effectiveSettlement);
 
     let newTotalDebt = currentTotalDebt + remainingInvoiceBalance;
     let newAvailableCredit = currentAvailableCredit - creditUsed;
@@ -469,16 +474,19 @@ const addSale = async (req, res, next) => {
     } else if (paid > 0) {
       ledgerNote += ` (سداد نقدي ${paid.toFixed(2)})`;
     }
+    if (effectiveSettlement > 0) {
+      ledgerNote += ` [تسوية باقي الفاتورة: ${effectiveSettlement.toFixed(2)} ج.م]`;
+    }
 
     const firstItem = processedItems[0] || { inventory_id: null, weight: 0, price: 0 };
     const saleRes = await client.query(
       `INSERT INTO sales
-       (branch_id, invoice_number, date, customer_id, inventory_id, quantity, unit_price, total, paid_amount, remaining_balance, customer_credit, notes, returns_total, gross_total)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+       (branch_id, invoice_number, date, customer_id, inventory_id, quantity, unit_price, total, paid_amount, remaining_balance, customer_credit, notes, returns_total, gross_total, settlement_amount)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
       [branch_id, invoice_number, date, customer_id,
-       firstItem.inventory_id, firstItem.weight, firstItem.price,
-       netInvoiceTotal, invoicePaidAmount, remainingInvoiceBalance, creditUsed, notes || ledgerNote,
-       returnsTotal, grossTotal]
+        firstItem.inventory_id, firstItem.weight, firstItem.price,
+        netInvoiceTotal, invoicePaidAmount, remainingInvoiceBalance, creditUsed, notes || ledgerNote,
+        returnsTotal, grossTotal, effectiveSettlement]
     );
     const saleId = saleRes.rows[0].id;
 
@@ -711,7 +719,7 @@ const updateSale = async (req, res, next) => {
     await client.query('BEGIN');
     const { branch_id } = req.user;
     const { id } = req.params;
-    const { date, paid_amount = 0, payment_type_id, notes = '', items = [], use_customer_credit = true } = req.body;
+    const { date, paid_amount = 0, settlement_amount = 0, payment_type_id, notes = '', items = [], use_customer_credit = true } = req.body;
 
     if (!items || items.length === 0) throw new Error('يجب إضافة صنف واحد على الأقل للفاتورة');
 
@@ -789,7 +797,12 @@ const updateSale = async (req, res, next) => {
     const cashPaidToInvoice = Math.min(paid, remainingAfterCredit);
     const overpaidAmount = Math.max(0, paid - remainingAfterCredit);
     const invoicePaidAmount = creditUsed + cashPaidToInvoice;
-    const remainingInvoiceBalance = remainingAfterCredit - cashPaidToInvoice;
+    const remainingBeforeSettlement = remainingAfterCredit - cashPaidToInvoice;
+
+    // Settlement / Rounding logic (تسوية باقي الفاتورة / إسقاط الكسور)
+    const settlementVal = Math.max(0, Number(settlement_amount || 0));
+    const effectiveSettlement = Math.min(settlementVal, remainingBeforeSettlement);
+    const remainingInvoiceBalance = Math.max(0, remainingBeforeSettlement - effectiveSettlement);
 
     let newTotalDebt = currentTotalDebt + remainingInvoiceBalance;
     let newAvailableCredit = currentAvailableCredit - creditUsed;
@@ -815,10 +828,10 @@ const updateSale = async (req, res, next) => {
       `UPDATE sales
        SET date = $1, inventory_id = $2, quantity = $3, unit_price = $4,
            total = $5, paid_amount = $6, remaining_balance = $7,
-           customer_credit = $8, notes = $9, updated_at = NOW()
-       WHERE id = $10 RETURNING *`,
+           customer_credit = $8, notes = $9, settlement_amount = $10, updated_at = NOW()
+       WHERE id = $11 RETURNING *`,
       [date, processedItems[0].inventory_id, processedItems[0].weight, processedItems[0].price,
-       newInvoiceTotal, invoicePaidAmount, remainingInvoiceBalance, creditUsed, notes, id]
+        newInvoiceTotal, invoicePaidAmount, remainingInvoiceBalance, creditUsed, notes, effectiveSettlement, id]
     );
 
     for (const item of processedItems) {
@@ -846,7 +859,7 @@ const updateSale = async (req, res, next) => {
        SET date = $1, invoice_amount = $2, paid_amount = $3, remaining_balance = $4, customer_credit = $5, notes = $6
        WHERE source_type = 'sales' AND source_id = $7`,
       [date, newInvoiceTotal, paid, remainingInvoiceBalance, creditAddedFromOverpayment,
-       ledgerNote, id]
+        ledgerNote, id]
     );
 
     await client.query(

@@ -87,7 +87,7 @@ const DATE_SHORTCUTS = [
   { label: 'الكل', getValue: () => ({ start: '', end: '' }) },
 ];
 
-const ReportsPage = () => {
+const ReportsPage = ({ branchIdOverride = null }) => {
   const { user } = useAuth();
   const [activeModule, setActiveModule] = useState('comprehensive');
   const [isLoading, setIsLoading] = useState(false);
@@ -102,6 +102,8 @@ const ReportsPage = () => {
   const [selectedChannel, setSelectedChannel] = useState('');
   const [selectedCompany, setSelectedCompany] = useState('');
   const [customerStatus, setCustomerStatus] = useState('all');
+  const [coloringStatus, setColoringStatus] = useState('');
+  const [custodyType, setCustodyType] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Dropdown reference lists
@@ -116,13 +118,28 @@ const ReportsPage = () => {
 
   // Load Customers & Companies lists for filters
   useEffect(() => {
-    customerService.getCustomers({ limit: 1000 })
-      .then(res => setCustomersList(res.data.customers || []))
-      .catch(() => { });
-    inventoryService.getUniqueValues()
-      .then(res => setCompaniesList(res.data.companies || []))
-      .catch(() => { });
-  }, []);
+    const custParams = { limit: 1000 };
+    if (branchIdOverride) custParams.branch_id = branchIdOverride;
+    customerService.getCustomers(custParams)
+      .then(res => {
+        const list = res.data?.customers || res.data || res.customers || [];
+        setCustomersList(Array.isArray(list) ? list : []);
+      })
+      .catch((err) => {
+        console.error('Error fetching customers in reports:', err);
+      });
+
+    const invParams = {};
+    if (branchIdOverride) invParams.branch_id = branchIdOverride;
+    inventoryService.getUniqueValues(invParams)
+      .then(res => {
+        const comp = res.data?.companies || res.companies || [];
+        setCompaniesList(Array.isArray(comp) ? comp : []);
+      })
+      .catch((err) => {
+        console.error('Error fetching companies in reports:', err);
+      });
+  }, [branchIdOverride]);
 
   // Fetch Report Data based on active module and filters
   const fetchReport = useCallback(async () => {
@@ -130,7 +147,8 @@ const ReportsPage = () => {
     try {
       const baseParams = {
         startDate: startDate || undefined,
-        endDate: endDate || undefined
+        endDate: endDate || undefined,
+        branch_id: branchIdOverride || undefined,
       };
 
       let res = null;
@@ -153,6 +171,7 @@ const ReportsPage = () => {
           break;
         case 'inventory':
           res = await reportsService.getInventoryReport({
+            ...baseParams,
             company: selectedCompany || undefined,
             product: searchQuery || undefined
           });
@@ -172,6 +191,7 @@ const ReportsPage = () => {
           break;
         case 'customers':
           res = await reportsService.getCustomersReport({
+            ...baseParams,
             status: customerStatus !== 'all' ? customerStatus : undefined,
             customerId: selectedCustomerId || undefined
           });
@@ -179,14 +199,14 @@ const ReportsPage = () => {
         case 'coloring':
           res = await reportsService.getColoringReport({
             ...baseParams,
-            status: selectedChannel || undefined,
+            status: coloringStatus || undefined,
             company: searchQuery || undefined
           });
           break;
         case 'custody':
           res = await reportsService.getCustodyReport({
             ...baseParams,
-            type: selectedChannel || undefined,
+            type: custodyType || undefined,
             personName: searchQuery || undefined
           });
           break;
@@ -201,7 +221,7 @@ const ReportsPage = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeModule, startDate, endDate, selectedCustomerId, selectedChannel, selectedCompany, customerStatus, searchQuery]);
+  }, [activeModule, startDate, endDate, selectedCustomerId, selectedChannel, selectedCompany, customerStatus, coloringStatus, custodyType, searchQuery, branchIdOverride]);
 
   useEffect(() => {
     fetchReport();
@@ -1289,6 +1309,8 @@ const ReportsPage = () => {
                 setActiveModule(m.key);
                 setSelectedCustomerId('');
                 setSelectedChannel('');
+                setColoringStatus('');
+                setCustodyType('');
                 setSearchQuery('');
               }}
               style={{
@@ -1475,8 +1497,8 @@ const ReportsPage = () => {
                 حالة أمر التلوين:
               </label>
               <select
-                value={selectedChannel}
-                onChange={e => setSelectedChannel(e.target.value)}
+                value={coloringStatus}
+                onChange={e => setColoringStatus(e.target.value)}
                 style={{
                   width: '100%', padding: '8px 12px', border: '1.5px solid #cbd5e1',
                   borderRadius: 8, fontSize: '0.84rem', fontFamily: 'inherit', outline: 'none', background: '#fff'
@@ -1497,8 +1519,8 @@ const ReportsPage = () => {
                 نوع حركة العهدة:
               </label>
               <select
-                value={selectedChannel}
-                onChange={e => setSelectedChannel(e.target.value)}
+                value={custodyType}
+                onChange={e => setCustodyType(e.target.value)}
                 style={{
                   width: '100%', padding: '8px 12px', border: '1.5px solid #cbd5e1',
                   borderRadius: 8, fontSize: '0.84rem', fontFamily: 'inherit', outline: 'none', background: '#fff'

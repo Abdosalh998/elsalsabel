@@ -3,7 +3,8 @@ import {
   Building2, 
   Users, 
   LayoutDashboard,
-  LogOut
+  LogOut,
+  FileBarChart2
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import '../../components/layout/Layout.css';
@@ -15,6 +16,7 @@ const AdminSidebar = ({ isOpen, toggleSidebar }) => {
   const menuItems = [
     { name: 'لوحة تحكم المدير', path: '/admin', icon: LayoutDashboard, exact: true },
     { name: 'الفروع', path: '/admin/branches', icon: Building2 },
+    { name: 'تقارير ومراقبة الفروع', path: '/admin/reports', icon: FileBarChart2 },
     { name: 'المستخدمون', path: '/admin/users', icon: Users },
   ];
 

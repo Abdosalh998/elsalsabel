@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 
 /**
  * GET /api/custody
@@ -7,13 +7,13 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
  */
 const getCustodies = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
     const { search, person_name, type, channel, payment_type_id, dateFrom, dateTo, page = 1, limit = 50 } = req.query;
     const { offset } = paginate(page, limit);
 
-    let baseWhere = `WHERE c.branch_id = $1`;
-    const params = [branch_id];
-    let paramIndex = 2;
+    let baseWhere = branch_id ? `WHERE c.branch_id = $1` : `WHERE 1=1`;
+    const params = branch_id ? [branch_id] : [];
+    let paramIndex = params.length + 1;
 
     if (search) {
       baseWhere += ` AND (c.person_name ILIKE $${paramIndex} OR c.phone ILIKE $${paramIndex} OR c.receipt_number ILIKE $${paramIndex} OR c.notes ILIKE $${paramIndex})`;
@@ -112,15 +112,19 @@ const getCustodies = async (req, res, next) => {
  */
 const getPersonsSummary = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
     const { search } = req.query;
 
     let searchClause = '';
-    const params = [branch_id];
+    const params = branch_id ? [branch_id] : [];
+    let idx = params.length + 1;
     if (search) {
-      searchClause = ` AND (c.person_name ILIKE $2 OR c.phone ILIKE $2)`;
+      searchClause = ` AND (c.person_name ILIKE $${idx} OR c.phone ILIKE $${idx})`;
       params.push(`%${search}%`);
+      idx++;
     }
+
+    const whereClause = branch_id ? `WHERE c.branch_id = $1 ${searchClause}` : (search ? `WHERE 1=1 ${searchClause}` : ``);
 
     const result = await pool.query(
       `SELECT
@@ -132,7 +136,7 @@ const getPersonsSummary = async (req, res, next) => {
         COUNT(*) AS transactions_count,
         MAX(c.date) AS last_date
        FROM custodies c
-       WHERE c.branch_id = $1 ${searchClause}
+       ${whereClause}
        GROUP BY c.person_name
        ORDER BY balance DESC, last_date DESC`,
       params

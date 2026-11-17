@@ -35,6 +35,7 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
   const currentTotal = Number(sale.total || 0);
   const paidAmount = Number(sale.paid_amount || 0);
   const remainingCurrent = Number(sale.remaining_balance || 0);
+  const settlementAmount = Number(sale.settlement_amount || 0);
 
   const prevDebt = Number(sale.customer_current_debt || 0);
   const prevCredit = Number(sale.customer_current_credit || 0);
@@ -374,6 +375,13 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
                     </div>
                   )}
 
+                  {settlementAmount > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: '0.9rem', color: '#b45309' }}>
+                      <span style={{ fontWeight: 600 }}>⚡ تسوية باقي الفاتورة:</span>
+                      <strong style={{ color: '#b45309' }}>- {settlementAmount.toFixed(2)} ج.م</strong>
+                    </div>
+                  )}
+
                   <div style={{ borderTop: '2px solid #86efac', paddingTop: 8, marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontWeight: 800, fontSize: '0.95rem', color: remainingCurrent > 0 ? '#b91c1c' : '#15803d' }}>
                       {remainingCurrent > 0 ? 'المتبقي على العميل:' : 'حالة الفاتورة:'}
@@ -482,6 +490,12 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                     <span>المدفوع {paymentTypeName ? '(' + paymentTypeName + ')' : 'نقداً'}:</span>
                     <strong>{cashPaid.toFixed(2)} ج.م</strong>
+                  </div>
+                )}
+                {settlementAmount > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, color: '#000', fontSize: '0.82rem' }}>
+                    <span>تسوية باقي الفاتورة:</span>
+                    <strong>- {settlementAmount.toFixed(2)} ج.م</strong>
                   </div>
                 )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '0.95rem' }}>

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Palette, Plus, RotateCcw, CheckCircle2, Clock, Scale,
   Layers, DollarSign, Eye, X, Upload, Trash2, ArrowUpRight,
-  TrendingUp, FileText, Check, Warehouse, Printer, Edit2
+  TrendingUp, FileText, Check, Warehouse, Printer, Edit2, Zap
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
@@ -33,6 +33,8 @@ const EMPTY_ORDER_FORM = {
   scale_ticket_image: null,
   // Direct stock option
   auto_stock: false,
+  stock_now: false,
+  target_inventory_id: '',
   returned_weight: '',
   returned_rolls: '',
   weight_gain: '',
@@ -45,6 +47,7 @@ const ColoringPage = () => {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
   const [inventoryItems, setInventoryItems] = useState([]);
+  const [allInventoryItems, setAllInventoryItems] = useState([]);
   const [paymentTypes, setPaymentTypes] = useState([]);
 
   // Modals
@@ -69,6 +72,7 @@ const ColoringPage = () => {
     channel: 'cash',
     notes: '',
     auto_stock: false,
+    stock_gain: true,
     roll_price: '',
     price_per_kg: '',
     colored_product: '',
@@ -117,6 +121,15 @@ const ColoringPage = () => {
     }
   }, []);
 
+  const fetchAllInventory = useCallback(async () => {
+    try {
+      const res = await coloringService.getAllInventoryItems();
+      setAllInventoryItems(res.data || []);
+    } catch (err) {
+      console.error('Error fetching all inventory items:', err);
+    }
+  }, []);
+
   const fetchPaymentTypes = useCallback(async () => {
     try {
       const res = await treasuryService.getPaymentTypes();
@@ -129,8 +142,9 @@ const ColoringPage = () => {
   useEffect(() => {
     fetchData();
     fetchInventory();
+    fetchAllInventory();
     fetchPaymentTypes();
-  }, [fetchData, fetchInventory, fetchPaymentTypes]);
+  }, [fetchData, fetchInventory, fetchAllInventory, fetchPaymentTypes]);
 
   // Handle Inventory Selection in Add Form
   const handleInventorySelect = (id) => {
@@ -179,14 +193,17 @@ const ColoringPage = () => {
     try {
       await coloringService.addOrder(formData);
       toast.success(
-        formData.auto_stock
-          ? 'تم إنشاء أمر التلوين وترحيله للمخزن بنجاح'
-          : 'تم إنشاء أمر التلوين وخصم الكمية من المخزن بنجاح'
+        formData.stock_now
+          ? 'تم إنشاء أمر التلوين وإضافة الوزن المنصرف فوراً للمخزون'
+          : formData.auto_stock
+            ? 'تم إنشاء أمر التلوين وترحيله للمخزن بنجاح'
+            : 'تم إنشاء أمر التلوين وخصم الكمية من المخزن بنجاح'
       );
       setIsAddModalOpen(false);
       setFormData(EMPTY_ORDER_FORM);
       fetchData();
       fetchInventory();
+      fetchAllInventory();
     } catch (err) {
       toast.error(err.response?.data?.message || 'حدث خطأ أثناء حفظ أمر التلوين');
     } finally {
@@ -208,6 +225,7 @@ const ColoringPage = () => {
       channel: order.channel || 'cash',
       notes: '',
       auto_stock: false,
+      stock_gain: true,
       roll_price: '',
       price_per_kg: '',
       colored_product: order.colored_product || `${order.product} ملون`,
@@ -285,13 +303,16 @@ const ColoringPage = () => {
     try {
       await coloringService.returnFromColoring(selectedOrder.id, returnFormData);
       toast.success(
-        returnFormData.auto_stock
-          ? 'تم تسجيل العودة وترحيل البضاعة للمخزن بنجاح'
-          : 'تم تسجيل عودة البضاعة بنجاح، يمكنك ترحيلها للمخزن لاحقاً'
+        selectedOrder?.initial_stocked
+          ? 'تم تسجيل عودة البضاعة وإضافة فرق الوزن للمخزون بنجاح'
+          : returnFormData.auto_stock
+            ? 'تم تسجيل العودة وترحيل البضاعة للمخزن بنجاح'
+            : 'تم تسجيل عودة البضاعة بنجاح، يمكنك ترحيلها للمخزن لاحقاً'
       );
       setIsReturnModalOpen(false);
       fetchData();
       fetchInventory();
+      fetchAllInventory();
     } catch (err) {
       toast.error(err.response?.data?.message || 'حدث خطأ أثناء تسجيل العودة');
     } finally {
@@ -321,6 +342,7 @@ const ColoringPage = () => {
       setIsStockModalOpen(false);
       fetchData();
       fetchInventory();
+      fetchAllInventory();
     } catch (err) {
       toast.error(err.response?.data?.message || 'حدث خطأ أثناء الترحيل للمخزن');
     } finally {
@@ -339,6 +361,7 @@ const ColoringPage = () => {
       setSelectedOrder(null);
       fetchData();
       fetchInventory();
+      fetchAllInventory();
     } catch (err) {
       toast.error(err.response?.data?.message || 'حدث خطأ أثناء حذف أمر التلوين');
     } finally {
@@ -539,6 +562,27 @@ const ColoringPage = () => {
       label: 'الحالة',
       render: (row) => {
         if (row.status === 'pending') {
+          if (row.initial_stocked) {
+            return (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  background: '#fef3c7',
+                  color: '#b45309',
+                  border: '1px solid #fde68a',
+                  borderRadius: 20,
+                  padding: '4px 10px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                }}
+              >
+                <Zap size={13} />
+                مرحل مبدئياً (في انتظار العودة)
+              </span>
+            );
+          }
           return (
             <span
               style={{
@@ -1163,7 +1207,7 @@ const ColoringPage = () => {
               <input
                 type="checkbox"
                 checked={formData.auto_stock}
-                onChange={(e) => setFormData({ ...formData, auto_stock: e.target.checked })}
+                onChange={(e) => setFormData({ ...formData, auto_stock: e.target.checked, stock_now: false })}
                 style={{ width: 18, height: 18, accentColor: 'var(--primary-color)' }}
               />
               <span>البضاعة عادت بالفعل وأريد ترحيلها للمخزن مباشرة الآن</span>
@@ -1241,6 +1285,104 @@ const ColoringPage = () => {
             )}
           </div>
 
+          {/* Stock Now Option: Add issued weight immediately to colored product in inventory */}
+          {!formData.auto_stock && (
+            <div
+              style={{
+                background: formData.stock_now ? '#f0fdf4' : '#f8fafc',
+                border: formData.stock_now ? '1.5px solid #22c55e' : '1px solid #e2e8f0',
+                borderRadius: 10,
+                padding: 14,
+                marginBottom: 16,
+                transition: 'all 0.2s',
+              }}
+            >
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  cursor: 'pointer',
+                  fontWeight: 700,
+                  color: formData.stock_now ? '#15803d' : '#334155',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={formData.stock_now}
+                  onChange={(e) => setFormData({ ...formData, stock_now: e.target.checked, auto_stock: false })}
+                  style={{ width: 18, height: 18, accentColor: '#16a34a' }}
+                />
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Zap size={16} color="#16a34a" />
+                  إضافة الوزن المنصرف فوراً إلى المخزون كمنتج ملون (وتحديد الصنف)
+                </span>
+              </label>
+
+              {formData.stock_now && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed #86efac' }}>
+                  <div
+                    style={{
+                      background: '#dcfce7',
+                      color: '#166534',
+                      padding: '10px 14px',
+                      borderRadius: 8,
+                      fontSize: '0.85rem',
+                      marginBottom: 14,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    💡 <strong>طريقة العمل:</strong> سيتم خصم الخامة وإضافة الوزن المنصرف ({formData.issued_weight || 0} كجم) فوراً إلى الصنف المختار بالمخزن ليكون جاهزاً للبيع. وعند عودة العربية من التلوين، يتم تسجيل الوزن الفعلي وإضافة <strong>فرق الوزن فقط</strong> تلقائياً!
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 12 }}>
+                    <label className="form-label" style={{ fontWeight: 600 }}>إضافة الوزن إلى أي صنف بالمخزن؟ *</label>
+                    <select
+                      className="form-input"
+                      value={formData.target_inventory_id}
+                      onChange={(e) => setFormData({ ...formData, target_inventory_id: e.target.value })}
+                      style={{ borderColor: '#86efac', background: '#fff' }}
+                    >
+                      <option value="">-- إنشاء صنف جديد باسم ({formData.colored_product || 'المنتج الملون'}) --</option>
+                      {allInventoryItems.map((inv) => (
+                        <option key={inv.id} value={inv.id}>
+                          {inv.product} {inv.company ? `(${inv.company})` : ''} - [الرصيد بالمخزن: {fmt(inv.weight_quantity, 2)} كجم | {inv.count || 0} لفة]
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {!formData.target_inventory_id && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <div className="form-group">
+                        <label className="form-label">سعر اللفة للصنف الجديد</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="form-input"
+                          placeholder="0.00"
+                          value={formData.roll_price}
+                          onChange={(e) => setFormData({ ...formData, roll_price: e.target.value })}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">سعر الكيلو للصنف الجديد</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="form-input"
+                          placeholder="0.00"
+                          value={formData.price_per_kg}
+                          onChange={(e) => setFormData({ ...formData, price_per_kg: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Attachments */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
             <div className="form-group">
@@ -1315,6 +1457,28 @@ const ColoringPage = () => {
               {selectedOrder?.issued_rolls || 0} لفة)
             </div>
           </div>
+
+          {selectedOrder?.initial_stocked && (
+            <div
+              style={{
+                background: '#f0fdf4',
+                border: '1px solid #86efac',
+                borderRadius: 10,
+                padding: '12px 16px',
+                marginBottom: 16,
+                fontSize: '0.9rem',
+                color: '#166534',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+                <Zap size={16} />
+                تم إضافة الوزن المنصرف ({fmt(selectedOrder?.stocked_weight || selectedOrder?.issued_weight, 2)} كجم) للمخزن مسبقاً!
+              </div>
+              <div style={{ marginTop: 6, fontSize: '0.85rem' }}>
+                عند التأكيد، سيتم حساب فرق الوزن ({returnFormData.weight_gain ? (Number(returnFormData.weight_gain) > 0 ? `+${returnFormData.weight_gain}` : returnFormData.weight_gain) : 0} كجم) وتحديث رصيد الصنف الملون في المخزن تلقائياً.
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
             <div className="form-group">
@@ -1420,77 +1584,110 @@ const ColoringPage = () => {
             </div>
           </div>
 
-          {/* Auto Stock Option in Return */}
-          <div
-            style={{
-              background: '#f8fafc',
-              border: '1px solid #e2e8f0',
-              borderRadius: 10,
-              padding: 14,
-              marginBottom: 16,
-            }}
-          >
-            <label
+          {/* Stock Gain / Auto Stock Option in Return */}
+          {selectedOrder?.initial_stocked ? (
+            <div
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                cursor: 'pointer',
-                fontWeight: 700,
-                color: '#334155',
+                background: '#f0fdf4',
+                border: '1px solid #86efac',
+                borderRadius: 10,
+                padding: 14,
+                marginBottom: 16,
               }}
             >
-              <input
-                type="checkbox"
-                checked={returnFormData.auto_stock}
-                onChange={(e) =>
-                  setReturnFormData({ ...returnFormData, auto_stock: e.target.checked })
-                }
-                style={{ width: 18, height: 18, accentColor: 'var(--primary-color)' }}
-              />
-              <span>ترحيل البضاعة للمخزن مباشرة الآن (متاحة للبيع)</span>
-            </label>
-
-            {returnFormData.auto_stock && (
-              <div
+              <label
                 style={{
-                  marginTop: 14,
-                  paddingTop: 14,
-                  borderTop: '1px dashed #cbd5e1',
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  cursor: 'pointer',
+                  fontWeight: 700,
+                  color: '#166534',
                 }}
               >
-                <div className="form-group">
-                  <label className="form-label">سعر اللفة للصنف الجديد</label>
-                  <input
-                    type="number"
-                    step="any"
-                    className="form-input"
-                    placeholder="0.00"
-                    value={returnFormData.roll_price}
-                    onChange={(e) =>
-                      setReturnFormData({ ...returnFormData, roll_price: e.target.value })
-                    }
-                  />
+                <input
+                  type="checkbox"
+                  checked={returnFormData.stock_gain !== false}
+                  onChange={(e) =>
+                    setReturnFormData({ ...returnFormData, stock_gain: e.target.checked })
+                  }
+                  style={{ width: 18, height: 18, accentColor: '#16a34a' }}
+                />
+                <span>إضافة فرق الوزن ({returnFormData.weight_gain || 0} كجم) تلقائياً لرصيد المخزن</span>
+              </label>
+            </div>
+          ) : (
+            <div
+              style={{
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: 10,
+                padding: 14,
+                marginBottom: 16,
+              }}
+            >
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  cursor: 'pointer',
+                  fontWeight: 700,
+                  color: '#334155',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={returnFormData.auto_stock}
+                  onChange={(e) =>
+                    setReturnFormData({ ...returnFormData, auto_stock: e.target.checked })
+                  }
+                  style={{ width: 18, height: 18, accentColor: 'var(--primary-color)' }}
+                />
+                <span>ترحيل البضاعة للمخزن مباشرة الآن (متاحة للبيع)</span>
+              </label>
+
+              {returnFormData.auto_stock && (
+                <div
+                  style={{
+                    marginTop: 14,
+                    paddingTop: 14,
+                    borderTop: '1px dashed #cbd5e1',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: 12,
+                  }}
+                >
+                  <div className="form-group">
+                    <label className="form-label">سعر اللفة للصنف الجديد</label>
+                    <input
+                      type="number"
+                      step="any"
+                      className="form-input"
+                      placeholder="0.00"
+                      value={returnFormData.roll_price}
+                      onChange={(e) =>
+                        setReturnFormData({ ...returnFormData, roll_price: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">سعر الكيلو للصنف الجديد</label>
+                    <input
+                      type="number"
+                      step="any"
+                      className="form-input"
+                      placeholder="0.00"
+                      value={returnFormData.price_per_kg}
+                      onChange={(e) =>
+                        setReturnFormData({ ...returnFormData, price_per_kg: e.target.value })
+                      }
+                    />
+                  </div>
                 </div>
-                <div className="form-group">
-                  <label className="form-label">سعر الكيلو للصنف الجديد</label>
-                  <input
-                    type="number"
-                    step="any"
-                    className="form-input"
-                    placeholder="0.00"
-                    value={returnFormData.price_per_kg}
-                    onChange={(e) =>
-                      setReturnFormData({ ...returnFormData, price_per_kg: e.target.value })
-                    }
-                  />
-                </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           <div className="form-group" style={{ marginBottom: 20 }}>
             <label className="form-label">ملاحظات العودة</label>

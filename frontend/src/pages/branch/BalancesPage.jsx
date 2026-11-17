@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Edit, Trash2, ChevronDown, ChevronUp, Search, X,
   User, TrendingDown, TrendingUp, Phone, Calendar,
-  Plus, AlertCircle, CheckCircle, RefreshCw
+  Plus, AlertCircle, CheckCircle, RefreshCw, Zap
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
@@ -52,6 +52,17 @@ const BalancesPage = () => {
 
   // Pre-selected customer for quick add from card
   const [preSelectedCustomerId, setPreSelectedCustomerId] = useState('');
+
+  // Settle Modal state
+  const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
+  const [selectedCustomerForSettle, setSelectedCustomerForSettle] = useState(null);
+  const [settleForm, setSettleForm] = useState({
+    type: 'credit',
+    amount: '',
+    reason: 'تسوية وتصفير مديونية العميل',
+    date: format(new Date(), 'yyyy-MM-dd')
+  });
+  const [isSubmittingSettle, setIsSubmittingSettle] = useState(false);
 
   const [formData, setFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
@@ -239,6 +250,65 @@ const BalancesPage = () => {
     } finally {
       setIsConfirmOpen(false);
       setBalanceToDelete(null);
+    }
+  };
+
+  const handleOpenSettleModal = (customer) => {
+    setSelectedCustomerForSettle(customer);
+    const debt = Number(customer.total_debt ?? (customer.customer_debt - customer.customer_credit) ?? 0);
+    const credit = Number(customer.total_credit ?? (customer.customer_credit - customer.customer_debt) ?? 0);
+
+    if (debt > 0) {
+      setSettleForm({
+        type: 'credit',
+        amount: debt.toFixed(2),
+        reason: 'تسوية وتصفير مديونية العميل',
+        date: format(new Date(), 'yyyy-MM-dd')
+      });
+    } else if (credit > 0) {
+      setSettleForm({
+        type: 'debit',
+        amount: credit.toFixed(2),
+        reason: 'تصفية وتسوية رصيد دائن للعميل',
+        date: format(new Date(), 'yyyy-MM-dd')
+      });
+    } else {
+      setSettleForm({
+        type: 'credit',
+        amount: '',
+        reason: 'تسوية حساب',
+        date: format(new Date(), 'yyyy-MM-dd')
+      });
+    }
+    setIsSettleModalOpen(true);
+  };
+
+  const handleSettleSubmit = async (e) => {
+    e.preventDefault();
+    if (!selectedCustomerForSettle) return;
+    const amt = parseFloat(settleForm.amount);
+    if (!amt || amt <= 0) {
+      return toast.error('أدخل مبلغ صحيح أكبر من الصفر');
+    }
+
+    setIsSubmittingSettle(true);
+    try {
+      const custId = selectedCustomerForSettle.customer_id || selectedCustomerForSettle.id;
+      const res = await customerService.adjustBalance(custId, {
+        ...settleForm,
+        amount: amt
+      });
+      toast.success(res.message || 'تمت التسوية بنجاح');
+      setIsSettleModalOpen(false);
+      setSelectedCustomerForSettle(null);
+      fetchData();
+      if (expandedCustomerId) {
+        reloadCustomerTransactions(expandedCustomerId);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || 'حدث خطأ أثناء التسوية');
+    } finally {
+      setIsSubmittingSettle(false);
     }
   };
 
@@ -509,6 +579,16 @@ const BalancesPage = () => {
                       </div>
                     </div>
 
+                    {/* Quick Settle button */}
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      title="تسوية رصيد العميل"
+                      onClick={e => { e.stopPropagation(); handleOpenSettleModal(customer); }}
+                      style={{ color: '#d97706', border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 8 }}
+                    >
+                      <Zap size={15} />
+                    </button>
+
                     {/* Quick Add button */}
                     <button
                       className="btn btn-icon btn-ghost"
@@ -577,6 +657,27 @@ const BalancesPage = () => {
                                   <span>الرصيد (له): <strong style={{ color: 'var(--success)' }}>{netC.toFixed(2)} ج.م</strong></span>
                                 </>
                               )}
+                              <button
+                                type="button"
+                                onClick={() => handleOpenSettleModal({ ...expandedCustomerInfo, customer_id: expandedCustomerId })}
+                                style={{
+                                  marginRight: 'auto',
+                                  background: '#fffbeb',
+                                  border: '1px solid #f59e0b',
+                                  color: '#b45309',
+                                  borderRadius: 6,
+                                  padding: '4px 10px',
+                                  fontSize: '0.78rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 4
+                                }}
+                              >
+                                <Zap size={13} />
+                                ⚡ تسوية رصيد العميل
+                              </button>
                             </div>
                           );
                         })()}
@@ -611,14 +712,17 @@ const BalancesPage = () => {
                                       fontSize: '0.7rem', padding: '2px 8px', borderRadius: 10, fontWeight: 600,
                                       background: tx.source_type === 'sales' ? 'rgba(99,102,241,0.1)' :
                                         tx.source_type === 'treasury' ? 'rgba(34,197,94,0.1)' :
-                                        tx.source_type === 'returns' ? 'rgba(239,68,68,0.12)' : 'rgba(156,163,175,0.15)',
+                                          tx.source_type === 'returns' ? 'rgba(239,68,68,0.12)' :
+                                            tx.source_type === 'adjustment' ? 'rgba(245,158,11,0.15)' : 'rgba(156,163,175,0.15)',
                                       color: tx.source_type === 'sales' ? 'var(--primary)' :
                                         tx.source_type === 'treasury' ? 'var(--success)' :
-                                        tx.source_type === 'returns' ? '#dc2626' : 'var(--text-muted)'
+                                          tx.source_type === 'returns' ? '#dc2626' :
+                                            tx.source_type === 'adjustment' ? '#b45309' : 'var(--text-muted)'
                                     }}>
                                       {tx.source_type === 'sales' ? 'فاتورة بيع' :
                                         tx.source_type === 'treasury' ? 'إيداع خزينة' :
-                                        tx.source_type === 'returns' ? 'مرتجع بضاعة' : 'يدوي'}
+                                          tx.source_type === 'returns' ? 'مرتجع بضاعة' :
+                                            tx.source_type === 'adjustment' ? '⚡ تسوية حساب' : 'يدوي'}
                                     </span>
                                   </td>
                                   <td style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>
@@ -856,6 +960,164 @@ const BalancesPage = () => {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* ── Customer Settlement Modal ── */}
+      <Modal
+        isOpen={isSettleModalOpen}
+        onClose={() => { setIsSettleModalOpen(false); setSelectedCustomerForSettle(null); }}
+        title="⚡ تسوية رصيد العميل"
+      >
+        {selectedCustomerForSettle && (
+          <form onSubmit={handleSettleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+              borderRadius: 10,
+              padding: '12px 14px'
+            }}>
+              <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)', marginBottom: 4 }}>
+                {selectedCustomerForSettle.customer_name || selectedCustomerForSettle.name}
+              </div>
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                {(() => {
+                  const debt = Number(selectedCustomerForSettle.total_debt ?? (selectedCustomerForSettle.customer_debt - selectedCustomerForSettle.customer_credit) ?? 0);
+                  const credit = Number(selectedCustomerForSettle.total_credit ?? (selectedCustomerForSettle.customer_credit - selectedCustomerForSettle.customer_debt) ?? 0);
+                  if (debt > 0) {
+                    return <span style={{ color: 'var(--danger)', fontWeight: 700 }}>مديونية متبقية على العميل: {debt.toFixed(2)} ج.م</span>;
+                  }
+                  if (credit > 0) {
+                    return <span style={{ color: 'var(--success)', fontWeight: 700 }}>رصيد دائن لصالح العميل: {credit.toFixed(2)} ج.م</span>;
+                  }
+                  return <span>الحساب مسوّى (0.00 ج.م)</span>;
+                })()}
+              </div>
+            </div>
+
+            {/* Type selector */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: 10,
+              background: '#f1f5f9',
+              padding: 4,
+              borderRadius: 10
+            }}>
+              <button
+                type="button"
+                onClick={() => setSettleForm(prev => ({ ...prev, type: 'credit' }))}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: settleForm.type === 'credit' ? '#16a34a' : 'transparent',
+                  color: settleForm.type === 'credit' ? '#fff' : '#64748b',
+                  fontWeight: 700,
+                  fontSize: '0.82rem',
+                  cursor: 'pointer'
+                }}
+              >
+                🟢 تسوية خصم (تصفير مديونية)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettleForm(prev => ({ ...prev, type: 'debit' }))}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: settleForm.type === 'debit' ? '#dc2626' : 'transparent',
+                  color: settleForm.type === 'debit' ? '#fff' : '#64748b',
+                  fontWeight: 700,
+                  fontSize: '0.82rem',
+                  cursor: 'pointer'
+                }}
+              >
+                🔴 تسوية إضافة دين على العميل
+              </button>
+            </div>
+
+            <div style={{
+              background: settleForm.type === 'credit' ? '#f0fdf4' : '#fef2f2',
+              border: `1px solid ${settleForm.type === 'credit' ? '#bbf7d0' : '#fecaca'}`,
+              borderRadius: 8,
+              padding: '8px 12px',
+              fontSize: '0.78rem',
+              color: settleForm.type === 'credit' ? '#166534' : '#991b1b',
+              fontWeight: 600
+            }}>
+              {settleForm.type === 'credit'
+                ? '✨ سيتم خصم هذا المبلغ من مديونية العميل وإسقاطه (تخفيض المطلوب منه).'
+                : '⚠️ سيتم إضافة هذا المبلغ كمديونية تسوية على العميل.'}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="form-group">
+                <label className="form-label">التاريخ *</label>
+                <input
+                  type="date"
+                  className="form-input"
+                  value={settleForm.date}
+                  onChange={e => setSettleForm(p => ({ ...p, date: e.target.value }))}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">مبلغ التسوية (ج.م) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  className="form-input"
+                  placeholder="0.00"
+                  value={settleForm.amount}
+                  onChange={e => setSettleForm(p => ({ ...p, amount: e.target.value }))}
+                  required
+                  style={{
+                    fontWeight: 800,
+                    fontSize: '1rem',
+                    color: settleForm.type === 'credit' ? '#16a34a' : '#dc2626'
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">سبب / بيان التسوية</label>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="مثال: تسوية كسور حساب، خصم متفق عليه، تصفير رصيد..."
+                value={settleForm.reason}
+                onChange={e => setSettleForm(p => ({ ...p, reason: e.target.value }))}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{
+                  flex: 1,
+                  background: settleForm.type === 'credit' ? '#16a34a' : '#dc2626',
+                  borderColor: settleForm.type === 'credit' ? '#16a34a' : '#dc2626'
+                }}
+                disabled={isSubmittingSettle}
+              >
+                {isSubmittingSettle ? 'جاري الحفظ...' : (settleForm.type === 'credit' ? 'تأكيد تسوية المديونية' : 'تأكيد إضافة المديونية')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ flex: 1 }}
+                onClick={() => { setIsSettleModalOpen(false); setSelectedCustomerForSettle(null); }}
+              >
+                إلغاء
+              </button>
+            </div>
+          </form>
+        )}
       </Modal>
 
       <ConfirmModal

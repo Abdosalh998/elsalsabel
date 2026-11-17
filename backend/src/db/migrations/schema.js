@@ -501,6 +501,15 @@ async function runMigrations() {
         updated_at  TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_cust_bal_adj_customer ON customer_balance_adjustments(customer_id);
+
+      -- Phase 10: Sales Settlement (تسوية الفواتير)
+      ALTER TABLE sales ADD COLUMN IF NOT EXISTS settlement_amount NUMERIC(15,2) DEFAULT 0;
+
+      -- Phase 11: Coloring Stock Synchronization (ربط التلوين الفوري بالمخزون وفرق الوزن)
+      ALTER TABLE coloring_orders ADD COLUMN IF NOT EXISTS initial_stocked BOOLEAN DEFAULT FALSE;
+      ALTER TABLE coloring_orders ADD COLUMN IF NOT EXISTS gain_stocked BOOLEAN DEFAULT FALSE;
+      ALTER TABLE coloring_orders ADD COLUMN IF NOT EXISTS stocked_weight NUMERIC(15,3) DEFAULT 0;
+      ALTER TABLE coloring_orders ADD COLUMN IF NOT EXISTS stocked_rolls INTEGER DEFAULT 0;
     `).catch((e) => { console.error('Phase 9 migration error:', e.message); });
 
     console.log('✅ Migrations completed successfully.');

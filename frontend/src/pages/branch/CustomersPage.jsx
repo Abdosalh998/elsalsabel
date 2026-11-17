@@ -352,6 +352,95 @@ const CustomersPage = () => {
             </div>
 
             <form onSubmit={handleAdjustSubmit}>
+              {/* Customer Current Balance Summary & Quick Settlement */}
+              {selectedCustomerForAdjust && (() => {
+                const totalDebt = Number(selectedCustomerForAdjust.customer_total || 0);
+                const totalPayments = Number(selectedCustomerForAdjust.total_payments || 0);
+                const netDebt = Math.max(0, totalDebt - totalPayments);
+                const netCredit = Math.max(0, totalPayments - totalDebt);
+
+                return (
+                  <div style={{
+                    background: '#f8fafc',
+                    border: '1.5px solid #e2e8f0',
+                    borderRadius: 10,
+                    padding: '12px 14px',
+                    marginBottom: 16
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: (netDebt > 0 || netCredit > 0) ? 10 : 0 }}>
+                      <span style={{ fontSize: '0.85rem', color: '#475569', fontWeight: 600 }}>الرصيد الفعلي الحالي:</span>
+                      <strong>
+                        {netDebt > 0 ? (
+                          <span style={{ color: '#dc2626', fontSize: '0.95rem' }}>🔴 مديونية عليه: {netDebt.toFixed(2)} ج.م</span>
+                        ) : netCredit > 0 ? (
+                          <span style={{ color: '#16a34a', fontSize: '0.95rem' }}>🟢 رصيد دائن له: {netCredit.toFixed(2)} ج.م</span>
+                        ) : (
+                          <span style={{ color: '#64748b', fontSize: '0.95rem' }}>✅ الحساب مسوّى (0.00 ج.م)</span>
+                        )}
+                      </strong>
+                    </div>
+
+                    {netDebt > 0 && (
+                      <div style={{ borderTop: '1px dashed #cbd5e1', paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.78rem', color: '#b45309', fontWeight: 700 }}>
+                          ⚡ تسوية وإسقاط المتبقي:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setAdjustForm(prev => ({
+                            ...prev,
+                            type: 'credit',
+                            amount: netDebt.toFixed(2),
+                            reason: 'تسوية وتصفير مديونية العميل'
+                          }))}
+                          style={{
+                            background: '#fffbeb',
+                            border: '1px solid #f59e0b',
+                            color: '#b45309',
+                            borderRadius: 6,
+                            padding: '4px 10px',
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          تصفير كامل المديونية ({netDebt.toFixed(2)} ج.م)
+                        </button>
+                      </div>
+                    )}
+
+                    {netCredit > 0 && (
+                      <div style={{ borderTop: '1px dashed #cbd5e1', paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.78rem', color: '#047857', fontWeight: 700 }}>
+                          ⚡ تصفية الرصيد الدائن:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setAdjustForm(prev => ({
+                            ...prev,
+                            type: 'debit',
+                            amount: netCredit.toFixed(2),
+                            reason: 'تصفية وتسوية رصيد دائن للعميل'
+                          }))}
+                          style={{
+                            background: '#f0fdf4',
+                            border: '1px solid #16a34a',
+                            color: '#166534',
+                            borderRadius: 6,
+                            padding: '4px 10px',
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          تصفير كامل الرصيد ({netCredit.toFixed(2)} ج.م)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Type Switcher: Credit vs Debit */}
               <div
                 style={{

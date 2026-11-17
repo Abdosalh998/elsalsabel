@@ -2,6 +2,16 @@ const pool = require('../../config/db');
 const { sendSuccess, sendError } = require('../../utils/helpers');
 
 /**
+ * Helper to resolve branch_id (allows admin to inspect any branch)
+ */
+const resolveUserBranch = (req) => {
+  if (req.user && req.user.role === 'admin' && req.query.branch_id && req.query.branch_id !== 'all') {
+    return parseInt(req.query.branch_id, 10);
+  }
+  return req.user?.branch_id;
+};
+
+/**
  * Helper to get current treasury balance for a branch
  */
 const getCurrentTreasuryBalance = async (branchId) => {
@@ -91,7 +101,7 @@ const getCurrentTreasuryBalance = async (branchId) => {
  */
 const getComprehensiveReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { startDate, endDate } = req.query;
 
     const dateFilterSales = [];
@@ -268,7 +278,7 @@ const getComprehensiveReport = async (req, res, next) => {
  */
 const getSalesReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { startDate, endDate, customerId, limit = 500 } = req.query;
 
     const whereClauses = ['s.branch_id = $1'];
@@ -396,7 +406,7 @@ const getSalesReport = async (req, res, next) => {
  */
 const getPurchasesReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { startDate, endDate, supplierId, product, limit = 500 } = req.query;
 
     const whereClauses = ['p.branch_id = $1'];
@@ -482,7 +492,7 @@ const getPurchasesReport = async (req, res, next) => {
  */
 const getInventoryReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { company, product } = req.query;
 
     const whereClauses = ['i.branch_id = $1'];
@@ -554,7 +564,7 @@ const getInventoryReport = async (req, res, next) => {
  */
 const getTreasuryReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { startDate, endDate, channel } = req.query;
 
     const whereClauses = ['t.branch_id = $1'];
@@ -632,7 +642,7 @@ const getTreasuryReport = async (req, res, next) => {
  */
 const getExpensesReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { startDate, endDate, description, channel } = req.query;
 
     const whereClauses = ['e.branch_id = $1'];
@@ -719,7 +729,7 @@ const getExpensesReport = async (req, res, next) => {
  */
 const getCustomersReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { status, customerId } = req.query; // status: 'all', 'debtor', 'creditor', 'zero'
 
     // If specific customer is requested: generate full statement of account (كشف حساب تفصيلي)
@@ -831,7 +841,7 @@ const getCustomersReport = async (req, res, next) => {
  */
 const getColoringReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { startDate, endDate, status, company, limit = 500 } = req.query;
 
     const whereClauses = ['co.branch_id = $1'];
@@ -933,7 +943,7 @@ const getColoringReport = async (req, res, next) => {
  */
 const getCustodyReport = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = resolveUserBranch(req);
     const { startDate, endDate, personName, type, channel, limit = 500 } = req.query;
 
     const whereClauses = ['c.branch_id = $1'];

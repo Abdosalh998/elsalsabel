@@ -16,11 +16,15 @@ export const adminService = {
   updateUser: (id, data) => api.put(`/admin/users/${id}`, data).then(r => r.data),
   deleteUser: (id) => api.delete(`/admin/users/${id}`).then(r => r.data),
 
-  // Branch data
+  // Branch data & monitoring
+  getBranchSummary: (branchId, params) => api.get(`/admin/branches/${branchId}/summary`, { params }).then(r => r.data),
   getBranchSales: (branchId, params) => api.get(`/admin/branches/${branchId}/sales`, { params }).then(r => r.data),
-  getBranchTreasury: (branchId) => api.get(`/admin/branches/${branchId}/treasury`).then(r => r.data),
+  getBranchTreasury: (branchId, params) => api.get(`/admin/branches/${branchId}/treasury`, { params }).then(r => r.data),
   getBranchCustomers: (branchId, params) => api.get(`/admin/branches/${branchId}/customers`, { params }).then(r => r.data),
   getBranchPurchases: (branchId, params) => api.get(`/admin/branches/${branchId}/purchases`, { params }).then(r => r.data),
   getBranchExpenses: (branchId, params) => api.get(`/admin/branches/${branchId}/expenses`, { params }).then(r => r.data),
-  getBranchInventory: (branchId) => api.get(`/admin/branches/${branchId}/inventory`).then(r => r.data),
+  getBranchInventory: (branchId, params) => api.get(`/admin/branches/${branchId}/inventory`, { params }).then(r => r.data),
+  getBranchColoring: (branchId, params) => api.get(`/admin/branches/${branchId}/coloring`, { params }).then(r => r.data),
+  getBranchCustody: (branchId, params) => api.get(`/admin/branches/${branchId}/custody`, { params }).then(r => r.data),
+  getBranchTransfers: (branchId, params) => api.get(`/admin/branches/${branchId}/transfers`, { params }).then(r => r.data),
 };

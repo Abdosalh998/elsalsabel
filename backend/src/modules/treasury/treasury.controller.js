@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 
 /**
  * Helper to get current treasury balance for a branch
@@ -142,10 +142,12 @@ const getCurrentTreasuryBalance = async (branchId) => {
 
 const getPaymentTypes = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
+    const whereClause = branch_id ? `WHERE branch_id = $1 AND is_active = true` : `WHERE is_active = true`;
+    const params = branch_id ? [branch_id] : [];
     const result = await pool.query(
-      `SELECT id, name, channel FROM payment_types WHERE branch_id = $1 AND is_active = true ORDER BY id ASC`, 
-      [branch_id]
+      `SELECT id, name, channel FROM payment_types ${whereClause} ORDER BY id ASC`, 
+      params
     );
     return sendSuccess(res, result.rows);
   } catch (err) {

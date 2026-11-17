@@ -157,6 +157,7 @@ const POSPage = () => {
     saveNewCustomer: true,
     customer: null,
     paid_amount: '',
+    settlement_amount: '',
     payment_type_id: '',
     notes: '',
     use_customer_credit: true,
@@ -373,7 +374,10 @@ const POSPage = () => {
   const creditUsed = Math.min(creditAvailable, saleTotal);
   const afterCredit = saleTotal - creditUsed;
   const salePaid = parseFloat(saleForm.paid_amount) || 0;
-  const saleRemaining = afterCredit - salePaid;
+  const saleRemainingBeforeSettlement = afterCredit - salePaid;
+  const saleSettlement = parseFloat(saleForm.settlement_amount) || 0;
+  const effectiveSaleSettlement = Math.min(saleSettlement, Math.max(0, saleRemainingBeforeSettlement));
+  const saleRemaining = Math.max(0, saleRemainingBeforeSettlement - effectiveSaleSettlement);
 
   // ─── Purchase Calculations ──────────────────────────────────────
   const purQty = parseFloat(purchaseForm.quantity) || 0;
@@ -431,6 +435,7 @@ const POSPage = () => {
         })),
         add_remaining_to_balance: addRemainingReturnToBalance,
         paid_amount: salePaid,
+        settlement_amount: effectiveSaleSettlement,
         payment_type_id: saleForm.payment_type_id || null,
         notes: saleForm.notes,
         use_customer_credit: saleForm.use_customer_credit,
@@ -704,6 +709,7 @@ const POSPage = () => {
       saveNewCustomer: true,
       customer: null,
       paid_amount: '',
+      settlement_amount: '',
       payment_type_id: '',
       notes: '',
       use_customer_credit: true,
@@ -1072,6 +1078,7 @@ const POSPage = () => {
                 saleReturns, addSaleReturn, removeSaleReturn, updateSaleReturn,
                 addRemainingReturnToBalance, setAddRemainingReturnToBalance,
                 creditAvailable, creditUsed, afterCredit, salePaid, saleRemaining,
+                saleRemainingBeforeSettlement, effectiveSaleSettlement,
                 customers, inventoryList, paymentTypes, customerDetails,
                 addSaleItem, removeSaleItem, updateSaleItem, isSubmitting, onSubmit: handleSaleSubmit
               }} />
@@ -1208,6 +1215,7 @@ const SaleForm = ({
   saleReturns = [], addSaleReturn, removeSaleReturn, updateSaleReturn,
   addRemainingReturnToBalance, setAddRemainingReturnToBalance,
   creditAvailable, creditUsed, afterCredit, salePaid, saleRemaining,
+  saleRemainingBeforeSettlement = 0, effectiveSaleSettlement = 0,
   customers, inventoryList, paymentTypes, customerDetails,
   addSaleItem, removeSaleItem, updateSaleItem, isSubmitting, onSubmit
 }) => {
@@ -1573,14 +1581,109 @@ const SaleForm = ({
             <span>المدفوع:</span><strong style={{ color: '#16a34a' }}>{fmt(salePaid)} ج.م</strong>
           </div>
 
+          {effectiveSaleSettlement > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: '#b45309', fontWeight: 700 }}>
+              <span>⚡ تسوية باقي الفاتورة:</span><strong style={{ color: '#b45309' }}>- {fmt(effectiveSaleSettlement)} ج.م</strong>
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.95rem', fontWeight: 800, borderTop: '1px dashed #cbd5e1', paddingTop: 6, marginTop: 2 }}>
             <span style={{ color: saleRemaining > 0 ? '#dc2626' : '#16a34a' }}>
-              {saleRemaining > 0 ? 'المتبقي:' : 'زيادة:'}
+              {saleRemaining > 0 ? 'المتبقي بعد التسوية:' : (effectiveSaleSettlement > 0 ? 'حالة الفاتورة:' : (saleRemainingBeforeSettlement < 0 ? 'زيادة:' : 'المتبقي:'))}
             </span>
             <span style={{ color: saleRemaining > 0 ? '#dc2626' : '#16a34a' }}>
-              {fmt(Math.abs(saleRemaining))} ج.م
+              {saleRemaining > 0 ? `${fmt(saleRemaining)} ج.م` : (effectiveSaleSettlement > 0 ? '✓ تم تسوية المتبقي بالكامل (خالص)' : `${fmt(Math.abs(saleRemaining))} ج.م`)}
             </span>
           </div>
+
+          {/* Quick Settlement Box */}
+          {saleRemainingBeforeSettlement > 0 && (
+            <div style={{
+              background: '#fffbeb',
+              border: '1.5px dashed #f59e0b',
+              borderRadius: 8,
+              padding: '10px 12px',
+              marginTop: 8,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#92400e', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  ⚡ تسوية المتبقي (إسقاط الكسور / الفكة):
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSaleForm(p => ({
+                    ...p,
+                    settlement_amount: (Number(p.settlement_amount) === Number(saleRemainingBeforeSettlement.toFixed(2)))
+                      ? ''
+                      : saleRemainingBeforeSettlement.toFixed(2)
+                  }))}
+                  style={{
+                    background: (Number(saleForm.settlement_amount) === Number(saleRemainingBeforeSettlement.toFixed(2))) ? '#f59e0b' : '#fff',
+                    border: '1px solid #f59e0b',
+                    color: (Number(saleForm.settlement_amount) === Number(saleRemainingBeforeSettlement.toFixed(2))) ? '#fff' : '#b45309',
+                    borderRadius: 6,
+                    padding: '4px 10px',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+                  }}
+                >
+                  {(Number(saleForm.settlement_amount) === Number(saleRemainingBeforeSettlement.toFixed(2)))
+                    ? `✓ تم تسوية كامل المتبقي (${fmt(saleRemainingBeforeSettlement)} ج.م)`
+                    : `تسوية كامل المتبقي (${fmt(saleRemainingBeforeSettlement)} ج.م)`}
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style={{ fontSize: '0.76rem', color: '#78350f', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                  أو حدد مبلغ التسوية:
+                </label>
+                <input
+                  type="number"
+                  placeholder="0.00"
+                  value={saleForm.settlement_amount}
+                  min="0"
+                  max={saleRemainingBeforeSettlement}
+                  step="0.01"
+                  onChange={e => setSaleForm(p => ({ ...p, settlement_amount: e.target.value }))}
+                  style={{
+                    flex: 1,
+                    maxWidth: 140,
+                    padding: '4px 8px',
+                    border: '1px solid #fcd34d',
+                    borderRadius: 6,
+                    background: '#fff',
+                    fontSize: '0.85rem',
+                    fontWeight: 700,
+                    color: '#92400e'
+                  }}
+                />
+                <span style={{ fontSize: '0.76rem', color: '#92400e' }}>ج.م</span>
+                {effectiveSaleSettlement > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSaleForm(p => ({ ...p, settlement_amount: '' }))}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#dc2626',
+                      cursor: 'pointer',
+                      fontSize: '0.76rem',
+                      fontWeight: 700,
+                      marginRight: 'auto'
+                    }}
+                    title="إلغاء التسوية"
+                  >
+                    إلغاء التسوية
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

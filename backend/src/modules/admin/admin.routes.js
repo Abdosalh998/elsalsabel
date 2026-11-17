@@ -7,6 +7,7 @@ const {
   getAdminStats,
   getBranchSales, getBranchTreasury, getBranchCustomers,
   getBranchPurchases, getBranchExpenses, getBranchInventory,
+  getBranchColoring, getBranchCustody, getBranchTransfers, getBranchSummary,
 } = require('./admin.controller');
 
 // All admin routes require authentication + admin role
@@ -29,11 +30,15 @@ router.put('/users/:id', updateUser);
 router.delete('/users/:id', deleteUser);
 
 // Branch-level data (admin view)
+router.get('/branches/:branchId/summary', getBranchSummary);
 router.get('/branches/:branchId/sales', getBranchSales);
 router.get('/branches/:branchId/treasury', getBranchTreasury);
 router.get('/branches/:branchId/customers', getBranchCustomers);
 router.get('/branches/:branchId/purchases', getBranchPurchases);
 router.get('/branches/:branchId/expenses', getBranchExpenses);
 router.get('/branches/:branchId/inventory', getBranchInventory);
+router.get('/branches/:branchId/coloring', getBranchColoring);
+router.get('/branches/:branchId/custody', getBranchCustody);
+router.get('/branches/:branchId/transfers', getBranchTransfers);
 
 module.exports = router;

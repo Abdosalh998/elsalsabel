@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 
 /**
  * GET /api/customers
@@ -7,7 +7,7 @@ const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
  */
 const getCustomers = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
     const { name, phone, balance_type, page = 1, limit = 50 } = req.query;
     const { offset } = paginate(page, limit);
 
@@ -16,10 +16,16 @@ const getCustomers = async (req, res, next) => {
              total_payments as current_credit,
              (customer_total - total_payments) as remaining_balance
       FROM customers
-      WHERE branch_id = $1 AND is_active = true
+      WHERE is_active = true
     `;
-    const params = [branch_id];
-    let paramIndex = 2;
+    const params = [];
+    let paramIndex = 1;
+
+    if (branch_id) {
+      query += ` AND branch_id = $${paramIndex}`;
+      params.push(branch_id);
+      paramIndex++;
+    }
 
     if (name) {
       const values = name.split(',').map(v => v.trim()).filter(Boolean);
@@ -64,9 +70,15 @@ const getCustomers = async (req, res, next) => {
     const result = await pool.query(query, params);
 
     // Get total count for pagination
-    let countQuery = `SELECT COUNT(*) FROM customers WHERE branch_id = $1 AND is_active = true`;
-    const countParams = [branch_id];
-    let countIndex = 2;
+    let countQuery = `SELECT COUNT(*) FROM customers WHERE is_active = true`;
+    const countParams = [];
+    let countIndex = 1;
+
+    if (branch_id) {
+      countQuery += ` AND branch_id = $${countIndex}`;
+      countParams.push(branch_id);
+      countIndex++;
+    }
 
     if (name) {
       const values = name.split(',').map(v => v.trim()).filter(Boolean);
@@ -202,16 +214,18 @@ const deleteCustomer = async (req, res, next) => {
  */
 const getUniqueValues = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
+    const whereBranch = branch_id ? `WHERE branch_id = $1 AND is_active = true` : `WHERE is_active = true`;
+    const params = branch_id ? [branch_id] : [];
 
     const namesRes = await pool.query(
-      `SELECT DISTINCT name FROM customers WHERE branch_id = $1 AND is_active = true AND name IS NOT NULL ORDER BY name`,
-      [branch_id]
+      `SELECT DISTINCT name FROM customers ${whereBranch} AND name IS NOT NULL ORDER BY name`,
+      params
     );
 
     const phonesRes = await pool.query(
-      `SELECT DISTINCT phone FROM customers WHERE branch_id = $1 AND is_active = true AND phone IS NOT NULL AND phone != '' ORDER BY phone`,
-      [branch_id]
+      `SELECT DISTINCT phone FROM customers ${whereBranch} AND phone IS NOT NULL AND phone != '' ORDER BY phone`,
+      params
     );
 
     return sendSuccess(res, {
@@ -229,11 +243,11 @@ const getUniqueValues = async (req, res, next) => {
  */
 const getOutstandingInvoices = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
     const { id } = req.params;
 
-    const result = await pool.query(
-      `SELECT 
+    let query = `
+      SELECT 
          s.id,
          s.invoice_number,
          s.date,
@@ -245,11 +259,16 @@ const getOutstandingInvoices = async (req, res, next) => {
          s.notes
        FROM sales s
        WHERE s.customer_id = $1 
-         AND s.branch_id = $2
          AND s.remaining_balance > 0
-       ORDER BY s.date ASC, s.id ASC`,
-      [id, branch_id]
-    );
+    `;
+    const params = [id];
+    if (branch_id) {
+      query += ` AND s.branch_id = $2`;
+      params.push(branch_id);
+    }
+    query += ` ORDER BY s.date ASC, s.id ASC`;
+
+    const result = await pool.query(query, params);
 
     const custRes = await pool.query(
       `SELECT total_payments, customer_total FROM customers WHERE id = $1`,
@@ -312,6 +331,28 @@ const adjustCustomerBalance = async (req, res, next) => {
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [branch_id, id, adjDate, type, numAmount, reason || '']
+    );
+
+    // Record in customer_balances ledger so it appears in statement of account (كشف الحساب)
+    const ledgerNotes = reason
+      ? `تسوية حساب: ${reason}`
+      : (type === 'credit' ? 'تسوية رصيد لصالح العميل' : 'تسوية مديونية على العميل');
+
+    await client.query(
+      `INSERT INTO customer_balances
+       (branch_id, date, customer_id, invoice_amount, paid_amount, remaining_balance, customer_credit, source_type, source_id, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'adjustment', $8, $9)`,
+      [
+        branch_id,
+        adjDate,
+        id,
+        type === 'debit' ? numAmount : 0,
+        type === 'credit' ? numAmount : 0,
+        type === 'debit' ? numAmount : 0,
+        0,
+        adjRes.rows[0].id,
+        ledgerNotes
+      ]
     );
 
     // Update customer balance:

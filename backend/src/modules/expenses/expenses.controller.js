@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 const { getCurrentTreasuryBalance } = require('../treasury/treasury.controller');
 
 /**
@@ -7,17 +7,17 @@ const { getCurrentTreasuryBalance } = require('../treasury/treasury.controller')
  */
 const getExpenses = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
     const { description, dateFrom, dateTo, page = 1, limit = 50 } = req.query;
     const { offset } = paginate(page, limit);
 
-    let query = `SELECT * FROM expenses WHERE branch_id = $1`;
-    const params = [branch_id];
-    let paramIndex = 2;
+    let query = branch_id ? `SELECT * FROM expenses WHERE branch_id = $1` : `SELECT * FROM expenses WHERE 1=1`;
+    const params = branch_id ? [branch_id] : [];
+    let paramIndex = params.length + 1;
 
-    let countQuery = `SELECT COUNT(*) FROM expenses WHERE branch_id = $1`;
-    const countParams = [branch_id];
-    let countIndex = 2;
+    let countQuery = branch_id ? `SELECT COUNT(*) FROM expenses WHERE branch_id = $1` : `SELECT COUNT(*) FROM expenses WHERE 1=1`;
+    const countParams = branch_id ? [branch_id] : [];
+    let countIndex = countParams.length + 1;
 
     if (description) {
       const values = description.split(',').map(v => v.trim()).filter(Boolean);
@@ -212,11 +212,13 @@ const deleteExpense = async (req, res, next) => {
  */
 const getUniqueValues = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
+    const whereBranch = branch_id ? `WHERE branch_id = $1 AND` : `WHERE`;
+    const params = branch_id ? [branch_id] : [];
     
     const descRes = await pool.query(
-      `SELECT DISTINCT description FROM expenses WHERE branch_id = $1 AND description IS NOT NULL AND description != '' ORDER BY description`,
-      [branch_id]
+      `SELECT DISTINCT description FROM expenses ${whereBranch} description IS NOT NULL AND description != '' ORDER BY description`,
+      params
     );
 
     return sendSuccess(res, {

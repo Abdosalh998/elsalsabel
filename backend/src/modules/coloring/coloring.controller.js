@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { sendSuccess, sendError, paginate } = require('../../utils/helpers');
+const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 
 /**
  * GET /api/coloring
@@ -206,77 +206,144 @@ async function _syncColoringExpense(db, branch_id, orderId) {
 
 /**
  * Helper: Stock a coloring order to inventory
+ * Supports initial stock (when order is created) or final stock (when truck returns)
  */
-async function _stockOrderToInventory(client, branch_id, order, roll_price = 0, price_per_kg = 0, customNotes = '') {
+async function _stockOrderToInventory(client, branch_id, order, options = {}) {
+  const {
+    roll_price = 0,
+    price_per_kg = 0,
+    customNotes = '',
+    target_inventory_id = null,
+    stockWeight = null,
+    stockRolls = null,
+    isInitial = false
+  } = (typeof options === 'object' && options !== null && !Array.isArray(options))
+    ? options
+    : { roll_price: options, price_per_kg: arguments[4] || 0, customNotes: arguments[5] || '' };
+
   const finalProduct = (order.colored_product && order.colored_product.trim()) || `${order.product} ملون`;
-  const finalWeight = parseFloat(order.returned_weight) > 0 ? parseFloat(order.returned_weight) : parseFloat(order.issued_weight);
-  const finalRolls = parseInt(order.returned_rolls, 10) > 0 ? parseInt(order.returned_rolls, 10) : parseInt(order.issued_rolls, 10);
+  const finalWeight = stockWeight !== null
+    ? parseFloat(stockWeight)
+    : (parseFloat(order.returned_weight) > 0 ? parseFloat(order.returned_weight) : parseFloat(order.issued_weight));
+  const finalRolls = stockRolls !== null
+    ? parseInt(stockRolls, 10)
+    : (parseInt(order.returned_rolls, 10) > 0 ? parseInt(order.returned_rolls, 10) : parseInt(order.issued_rolls, 10));
+
   const rPrice = parseFloat(roll_price) || 0;
   const kPrice = parseFloat(price_per_kg) || 0;
 
-  // Search by product name in inventory for this branch
-  const existingRes = await client.query(
-    `SELECT * FROM inventory WHERE branch_id = $1 AND LOWER(TRIM(product)) = LOWER(TRIM($2)) LIMIT 1`,
-    [branch_id, finalProduct]
-  );
-
-  let resultInventoryId;
+  let resultInventoryId = target_inventory_id ? parseInt(target_inventory_id, 10) : null;
   const noteText = customNotes || `مرحّل من أمر تلوين رقم ${order.order_number}`;
 
-  if (existingRes.rows.length > 0) {
-    const existing = existingRes.rows[0];
-    const newWeight = parseFloat(existing.weight_quantity) + finalWeight;
-    const newCount = (parseInt(existing.count, 10) || 0) + finalRolls;
-    const effectiveRollPrice = rPrice > 0 ? rPrice : (parseFloat(existing.roll_price) || 0);
-    const effectiveKgPrice = kPrice > 0 ? kPrice : (parseFloat(existing.price_per_kg) || 0);
-    const newTotal = effectiveRollPrice > 0 ? (newCount * effectiveRollPrice) : (newWeight * effectiveKgPrice);
+  // 1. If a specific target inventory ID was selected from existing inventory:
+  if (resultInventoryId) {
+    const existingRes = await client.query(
+      `SELECT * FROM inventory WHERE id = $1 AND branch_id = $2 FOR UPDATE`,
+      [resultInventoryId, branch_id]
+    );
+    if (existingRes.rows.length > 0) {
+      const existing = existingRes.rows[0];
+      const newWeight = parseFloat(existing.weight_quantity) + finalWeight;
+      const newCount = (parseInt(existing.count, 10) || 0) + finalRolls;
+      const effectiveRollPrice = rPrice > 0 ? rPrice : (parseFloat(existing.roll_price) || 0);
+      const effectiveKgPrice = kPrice > 0 ? kPrice : (parseFloat(existing.price_per_kg) || 0);
+      const newTotal = effectiveRollPrice > 0 ? (newCount * effectiveRollPrice) : (newWeight * effectiveKgPrice);
 
-    await client.query(
-      `UPDATE inventory
-       SET weight_quantity = $1,
-           count = $2,
-           roll_price = $3,
-           price_per_kg = $4,
-           total = $5,
-           updated_at = NOW()
-       WHERE id = $6`,
-      [newWeight, newCount, effectiveRollPrice, effectiveKgPrice, newTotal, existing.id]
-    );
-    resultInventoryId = existing.id;
-  } else {
-    const totalVal = rPrice > 0 ? (finalRolls * rPrice) : (finalWeight * kPrice);
-    const insRes = await client.query(
-      `INSERT INTO inventory
-        (branch_id, date, product, company, weight_quantity, count,
-         roll_price, price_per_kg, issued_quantity, issued_rolls, total, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, $9, $10)
-       RETURNING id`,
-      [
-        branch_id,
-        new Date().toISOString().split('T')[0],
-        finalProduct,
-        'تلوين',
-        finalWeight,
-        finalRolls,
-        rPrice,
-        kPrice,
-        totalVal,
-        noteText,
-      ]
-    );
-    resultInventoryId = insRes.rows[0].id;
+      await client.query(
+        `UPDATE inventory
+         SET weight_quantity = $1,
+             count = $2,
+             roll_price = $3,
+             price_per_kg = $4,
+             total = $5,
+             updated_at = NOW()
+         WHERE id = $6`,
+        [newWeight, newCount, effectiveRollPrice, effectiveKgPrice, newTotal, existing.id]
+      );
+    } else {
+      resultInventoryId = null;
+    }
   }
 
-  // Update order status to stocked
+  // 2. If no specific target ID was given or found, look up by product name or create new
+  if (!resultInventoryId) {
+    const existingRes = await client.query(
+      `SELECT * FROM inventory WHERE branch_id = $1 AND LOWER(TRIM(product)) = LOWER(TRIM($2)) LIMIT 1 FOR UPDATE`,
+      [branch_id, finalProduct]
+    );
+
+    if (existingRes.rows.length > 0) {
+      const existing = existingRes.rows[0];
+      const newWeight = parseFloat(existing.weight_quantity) + finalWeight;
+      const newCount = (parseInt(existing.count, 10) || 0) + finalRolls;
+      const effectiveRollPrice = rPrice > 0 ? rPrice : (parseFloat(existing.roll_price) || 0);
+      const effectiveKgPrice = kPrice > 0 ? kPrice : (parseFloat(existing.price_per_kg) || 0);
+      const newTotal = effectiveRollPrice > 0 ? (newCount * effectiveRollPrice) : (newWeight * effectiveKgPrice);
+
+      await client.query(
+        `UPDATE inventory
+         SET weight_quantity = $1,
+             count = $2,
+             roll_price = $3,
+             price_per_kg = $4,
+             total = $5,
+             updated_at = NOW()
+         WHERE id = $6`,
+        [newWeight, newCount, effectiveRollPrice, effectiveKgPrice, newTotal, existing.id]
+      );
+      resultInventoryId = existing.id;
+    } else {
+      const totalVal = rPrice > 0 ? (finalRolls * rPrice) : (finalWeight * kPrice);
+      const compName = (order.coloring_company && order.coloring_company.trim()) || 'تلوين';
+      const insRes = await client.query(
+        `INSERT INTO inventory
+          (branch_id, date, product, company, weight_quantity, count,
+           roll_price, price_per_kg, issued_quantity, issued_rolls, total, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, $9, $10)
+         RETURNING id`,
+        [
+          branch_id,
+          new Date().toISOString().split('T')[0],
+          finalProduct,
+          compName,
+          finalWeight,
+          finalRolls,
+          rPrice,
+          kPrice,
+          totalVal,
+          noteText,
+        ]
+      );
+      resultInventoryId = insRes.rows[0].id;
+    }
+  }
+
+  const newStockedW = Number(order.stocked_weight || 0) + finalWeight;
+  const newStockedR = Number(order.stocked_rolls || 0) + finalRolls;
+
+  const updateStatusSql = isInitial
+    ? `UPDATE coloring_orders
+       SET initial_stocked = true,
+           result_inventory_id = $1,
+           stocked_weight = $2,
+           stocked_rolls = $3,
+           colored_product = $4,
+           updated_at = NOW()
+       WHERE id = $5
+       RETURNING *`
+    : `UPDATE coloring_orders
+       SET status = 'stocked',
+           result_inventory_id = $1,
+           stocked_weight = $2,
+           stocked_rolls = $3,
+           colored_product = $4,
+           updated_at = NOW()
+       WHERE id = $5
+       RETURNING *`;
+
   const updatedOrderRes = await client.query(
-    `UPDATE coloring_orders
-     SET status = 'stocked',
-         colored_product = $1,
-         result_inventory_id = $2,
-         updated_at = NOW()
-     WHERE id = $3
-     RETURNING *`,
-    [finalProduct, resultInventoryId, order.id]
+    updateStatusSql,
+    [resultInventoryId, newStockedW, newStockedR, finalProduct, order.id]
   );
 
   return updatedOrderRes.rows[0];
@@ -311,6 +378,8 @@ const addColoringOrder = async (req, res, next) => {
       image_url,
       scale_ticket_image,
       auto_stock,
+      stock_now,
+      target_inventory_id,
       roll_price,
       price_per_kg,
     } = req.body;
@@ -482,15 +551,34 @@ const addColoringOrder = async (req, res, next) => {
       await _syncColoringExpense(client, branch_id, createdOrder.id);
     }
 
-    // If auto_stock requested, stock immediately into inventory
-    if (auto_stock) {
+    // If stock_now requested: stock the issued weight into colored product immediately!
+    const shouldStockNow = Boolean(stock_now);
+    if (shouldStockNow) {
       createdOrder = await _stockOrderToInventory(
         client,
         branch_id,
         createdOrder,
-        roll_price,
-        price_per_kg,
-        notes
+        {
+          target_inventory_id,
+          roll_price,
+          price_per_kg,
+          customNotes: notes,
+          stockWeight: issuedW,
+          stockRolls: issuedR,
+          isInitial: true
+        }
+      );
+    } else if (auto_stock) {
+      createdOrder = await _stockOrderToInventory(
+        client,
+        branch_id,
+        createdOrder,
+        {
+          target_inventory_id,
+          roll_price,
+          price_per_kg,
+          customNotes: notes
+        }
       );
     }
 
@@ -524,6 +612,7 @@ const returnFromColoring = async (req, res, next) => {
       channel,
       notes,
       auto_stock,
+      stock_gain = true,
       roll_price,
       price_per_kg,
       colored_product,
@@ -606,15 +695,54 @@ const returnFromColoring = async (req, res, next) => {
     // Sync expense to deduct from treasury
     await _syncColoringExpense(client, branch_id, id);
 
-    // If auto_stock is selected, stock to inventory now
-    if (auto_stock) {
+    // Check if order was already initial_stocked when created:
+    if (order.initial_stocked && order.result_inventory_id) {
+      const shouldStockGain = (stock_gain !== false && stock_gain !== 'false');
+      if (shouldStockGain && gainW !== 0) {
+        const gainR = (parseInt(retR, 10) || 0) - (parseInt(order.issued_rolls, 10) || 0);
+        await client.query(
+          `UPDATE inventory
+           SET weight_quantity = weight_quantity + $1,
+               count = count + $2,
+               total = CASE WHEN roll_price > 0 THEN (count + $2) * roll_price ELSE (weight_quantity + $1) * price_per_kg END,
+               updated_at = NOW()
+           WHERE id = $3`,
+          [gainW, gainR, order.result_inventory_id]
+        );
+
+        const currentStockedW = Number(order.stocked_weight || 0) + gainW;
+        const currentStockedR = Number(order.stocked_rolls || 0) + gainR;
+
+        const finalOrderRes = await client.query(
+          `UPDATE coloring_orders
+           SET gain_stocked = true,
+               stocked_weight = $1,
+               stocked_rolls = $2,
+               status = 'stocked',
+               updated_at = NOW()
+           WHERE id = $3
+           RETURNING *`,
+          [currentStockedW, currentStockedR, id]
+        );
+        updatedOrder = finalOrderRes.rows[0];
+      } else {
+        const finalOrderRes = await client.query(
+          `UPDATE coloring_orders SET status = 'stocked', updated_at = NOW() WHERE id = $1 RETURNING *`,
+          [id]
+        );
+        updatedOrder = finalOrderRes.rows[0];
+      }
+    } else if (auto_stock) {
+      // Order was NOT stocked initially, so stock full returned weight now
       updatedOrder = await _stockOrderToInventory(
         client,
         branch_id,
         updatedOrder,
-        roll_price,
-        price_per_kg,
-        notes
+        {
+          roll_price,
+          price_per_kg,
+          customNotes: notes
+        }
       );
     }
 
@@ -653,6 +781,10 @@ const stockColoredProduct = async (req, res, next) => {
       return sendError(res, 'تم ترحيل هذا الأمر للمخزن بالفعل', 400);
     }
 
+    if (order.initial_stocked) {
+      return sendError(res, 'الوزن المنصرف تم إضافته للمخزون فوراً عند إنشاء الأمر. استخدم تسجيل العودة لإضافة فرق الوزن للمخزون', 400);
+    }
+
     if (order.status === 'pending') {
       return sendError(res, 'يجب تسجيل عودة البضاعة من التلوين أولاً قبل الترحيل', 400);
     }
@@ -675,9 +807,11 @@ const stockColoredProduct = async (req, res, next) => {
       client,
       branch_id,
       order,
-      roll_price,
-      price_per_kg,
-      notes
+      {
+        roll_price,
+        price_per_kg,
+        customNotes: notes
+      }
     );
 
     await client.query('COMMIT');
@@ -793,8 +927,8 @@ const deleteColoringOrder = async (req, res, next) => {
     }
     const order = orderRes.rows[0];
 
-    // If order was stocked into inventory, reverse/delete the resulting inventory item
-    if (order.status === 'stocked' && order.result_inventory_id) {
+    // If order was stocked into inventory (either fully stocked or initial_stocked), reverse the colored product inventory
+    if ((order.status === 'stocked' || order.initial_stocked) && order.result_inventory_id) {
       // Check if the resulting colored product has sales
       const saleCheck = await client.query(
         `SELECT 1 FROM sale_items WHERE inventory_id = $1 LIMIT 1`,
@@ -814,11 +948,19 @@ const deleteColoringOrder = async (req, res, next) => {
       );
       if (resInvRes.rows.length > 0) {
         const resInv = resInvRes.rows[0];
-        const retWeight = parseFloat(order.returned_weight) > 0 ? parseFloat(order.returned_weight) : (parseFloat(order.issued_weight) || 0);
-        const retRolls = parseInt(order.returned_rolls, 10) > 0 ? parseInt(order.returned_rolls, 10) : (parseInt(order.issued_rolls, 10) || 0);
 
-        const remainingWeight = Math.max(0, parseFloat(resInv.weight_quantity || 0) - retWeight);
-        const remainingRolls = Math.max(0, parseInt(resInv.count || 0, 10) - retRolls);
+        // Amount to reverse = whatever was stocked (stocked_weight tracks exact amount added)
+        const stockedW = parseFloat(order.stocked_weight) || 0;
+        const stockedR = parseInt(order.stocked_rolls, 10) || 0;
+
+        // If nothing was stocked (e.g. initial_stocked flag but helper not called yet), use returned/issued weight
+        const reverseW = stockedW > 0 ? stockedW
+          : (parseFloat(order.returned_weight) > 0 ? parseFloat(order.returned_weight) : (parseFloat(order.issued_weight) || 0));
+        const reverseR = stockedR > 0 ? stockedR
+          : (parseInt(order.returned_rolls, 10) > 0 ? parseInt(order.returned_rolls, 10) : (parseInt(order.issued_rolls, 10) || 0));
+
+        const remainingWeight = Math.max(0, parseFloat(resInv.weight_quantity || 0) - reverseW);
+        const remainingRolls = Math.max(0, parseInt(resInv.count || 0, 10) - reverseR);
 
         // Disconnect result_inventory_id first to prevent FK constraint error
         await client.query(`UPDATE coloring_orders SET result_inventory_id = NULL WHERE id = $1`, [id]);
@@ -879,7 +1021,9 @@ const deleteColoringOrder = async (req, res, next) => {
  */
 const getInventoryForColoring = async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req);
+    const whereBranch = branch_id ? `WHERE branch_id = $1 AND` : `WHERE`;
+    const params = branch_id ? [branch_id] : [];
     const result = await pool.query(
       `SELECT 
          MIN(id) AS id,
@@ -890,11 +1034,40 @@ const getInventoryForColoring = async (req, res, next) => {
          COALESCE(AVG(NULLIF(roll_price, 0)), 0) AS roll_price,
          COALESCE(AVG(NULLIF(price_per_kg, 0)), 0) AS price_per_kg
        FROM inventory
-       WHERE branch_id = $1
-         AND (weight_quantity - issued_quantity) > 0
+       ${whereBranch} (weight_quantity - issued_quantity) > 0
        GROUP BY TRIM(product)
        ORDER BY product ASC`,
-      [branch_id]
+      params
+    );
+    return sendSuccess(res, result.rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/coloring/all-inventory-items
+ * Returns ALL inventory items (including zero-qty) so user can pick a target to stock colored product into
+ */
+const getAllInventoryItems = async (req, res, next) => {
+  try {
+    const branch_id = getEffectiveBranchId(req);
+    const whereBranch = branch_id ? `WHERE branch_id = $1` : ``;
+    const params = branch_id ? [branch_id] : [];
+    const result = await pool.query(
+      `SELECT
+         id,
+         TRIM(product) AS product,
+         company,
+         COALESCE(weight_quantity, 0) AS weight_quantity,
+         COALESCE(weight_quantity - COALESCE(issued_quantity, 0), 0) AS available_quantity,
+         COALESCE(count, 0) AS count,
+         COALESCE(roll_price, 0) AS roll_price,
+         COALESCE(price_per_kg, 0) AS price_per_kg
+       FROM inventory
+       ${whereBranch}
+       ORDER BY product ASC, id ASC`,
+      params
     );
     return sendSuccess(res, result.rows);
   } catch (err) {
@@ -910,4 +1083,5 @@ module.exports = {
   updateColoringOrder,
   deleteColoringOrder,
   getInventoryForColoring,
+  getAllInventoryItems,
 };

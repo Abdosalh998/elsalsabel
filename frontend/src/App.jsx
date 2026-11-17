@@ -8,6 +8,7 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminBranches from './pages/admin/AdminBranches';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminBranchView from './pages/admin/AdminBranchView';
+import AdminReportsPage from './pages/admin/AdminReportsPage';
 import BranchLayout from './components/layout/BranchLayout';
 import BranchDashboard from './pages/branch/BranchDashboard';
 import CustomersPage from './pages/branch/CustomersPage';
@@ -65,6 +66,7 @@ function App() {
             <Route index element={<AdminDashboard />} />
             <Route path="branches" element={<AdminBranches />} />
             <Route path="branches/:branchId" element={<AdminBranchView />} />
+            <Route path="reports" element={<AdminReportsPage />} />
             <Route path="users" element={<AdminUsers />} />
           </Route>
 

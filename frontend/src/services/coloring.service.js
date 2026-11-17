@@ -3,6 +3,7 @@ import api from './api';
 export const coloringService = {
   getOrders: (params) => api.get('/coloring', { params }).then((res) => res.data),
   getInventoryItems: () => api.get('/coloring/inventory-items').then((res) => res.data),
+  getAllInventoryItems: () => api.get('/coloring/all-inventory-items').then((res) => res.data),
   addOrder: (data) => api.post('/coloring', data).then((res) => res.data),
   returnFromColoring: (id, data) => api.post(`/coloring/${id}/return`, data).then((res) => res.data),
   stockColoredProduct: (id, data) => api.post(`/coloring/${id}/stock`, data).then((res) => res.data),
