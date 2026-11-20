@@ -13,6 +13,7 @@ const runSeeds = require('./db/seeds/seed');
 const authRoutes = require('./modules/auth/auth.routes');
 const customersRoutes = require('./modules/customers/customers.routes');
 const balancesRoutes = require('./modules/balances/balances.routes');
+const sectionsRoutes = require('./modules/inventory/sections.routes');
 const inventoryRoutes = require('./modules/inventory/inventory.routes');
 const salesRoutes = require('./modules/sales/sales.routes');
 const expensesRoutes = require('./modules/expenses/expenses.routes');
@@ -25,6 +26,8 @@ const transfersRoutes = require('./modules/transfers/transfers.routes');
 const returnsRoutes = require('./modules/returns/returns.routes');
 const coloringRoutes = require('./modules/coloring/coloring.routes');
 const custodyRoutes = require('./modules/custody/custody.routes');
+const stocktakingRoutes = require('./modules/stocktaking/stocktaking.routes');
+const jardRoutes = require('./modules/jard/jard.routes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,6 +49,7 @@ app.use('/assets', express.static(path.join(__dirname, 'assets')));
 app.use('/api/auth', authRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/balances', balancesRoutes);
+app.use('/api/inventory/sections', sectionsRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/returns', returnsRoutes);
@@ -58,6 +62,8 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/transfers', transfersRoutes);
 app.use('/api/coloring', coloringRoutes);
 app.use('/api/custody', custodyRoutes);
+app.use('/api/stocktaking', stocktakingRoutes);
+app.use('/api/jard', jardRoutes);
 
 // ─── Health Check ──────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

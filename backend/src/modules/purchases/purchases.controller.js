@@ -1,5 +1,6 @@
 const pool = require('../../config/db');
 const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
+const { getCurrentTreasuryBalance } = require('../treasury/treasury.controller');
 
 /**
  * GET /api/purchases
@@ -189,6 +190,23 @@ const addPurchase = async (req, res, next) => {
     }
 
     const qtyAfterDisc = effWeight - Number(discount);
+
+    // ── Check treasury liquidity to prevent negative balances ─────────────
+    if (treasury_paid > 0) {
+      const treasuryBal = await getCurrentTreasuryBalance(branch_id);
+      const purChannel = channel || 'cash';
+      const availLiquidity = Number(treasuryBal?.channels?.[purChannel] ?? treasuryBal?.total ?? 0);
+      if (treasury_paid > availLiquidity) {
+        const chNames = { cash: 'نقدي (كاش)', wallet: 'محفظة إلكترونية', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+        const chName = chNames[purChannel] || purChannel;
+        await client.query('ROLLBACK');
+        return sendError(
+          res,
+          `رصيد الخزينة المتاح في قناة (${chName}) هو ${availLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م، ولا يكفي لسداد قيمة الفاتورة النقدية المطلوبة (${treasury_paid.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م). تم منع العملية لتفادي الأرصدة السالبة بالخزينة.`,
+          400
+        );
+      }
+    }
 
     // ── Insert purchase record ───────────────────────────────────────────
     const purRes = await client.query(
@@ -403,7 +421,27 @@ const updatePurchase = async (req, res, next) => {
 
     const invoiceTotal = Number(total);
     const oldCredit    = Number(oldRes.rows[0].credit_used);
+    const oldTreasury  = Number(oldRes.rows[0].treasury_balance || 0);
     const newTreasury  = Math.max(0, invoiceTotal - oldCredit);
+
+    // ── Check treasury liquidity on increase ─────────────────────────────
+    if (newTreasury > oldTreasury) {
+      const treasuryBal = await getCurrentTreasuryBalance(branch_id);
+      const purChannel = channel || oldRes.rows[0].channel || 'cash';
+      const availLiquidity = Number(treasuryBal?.channels?.[purChannel] ?? treasuryBal?.total ?? 0);
+      const diff = newTreasury - oldTreasury;
+      if (diff > availLiquidity) {
+        const chNames = { cash: 'نقدي (كاش)', wallet: 'محفظة إلكترونية', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+        const chName = chNames[purChannel] || purChannel;
+        await client.query('ROLLBACK');
+        return sendError(
+          res,
+          `رصيد الخزينة المتاح في قناة (${chName}) هو ${availLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م، ولا يكفي لتغطية زيادة المدفوع من الخزينة (${diff.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م). تم منع العملية لتفادي الأرصدة السالبة بالخزينة.`,
+          400
+        );
+      }
+    }
+
     const qtyAfterDisc = Number(weight_quantity) - Number(discount);
 
     const result = await client.query(

@@ -56,6 +56,17 @@ const SalesPage = () => {
   });
 
   const [items, setItems] = useState([{ ...EMPTY_ITEM }]);
+  const [isMultiPayment, setIsMultiPayment] = useState(false);
+  const [salePayments, setSalePayments] = useState([{ payment_type_id: '', amount: '', notes: '' }]);
+
+  const addSalePayment = () => setSalePayments(prev => [...prev, { payment_type_id: '', amount: '', notes: '' }]);
+  const removeSalePayment = (idx) =>
+    setSalePayments(prev => {
+      if (prev.length <= 1) return [{ payment_type_id: '', amount: '', notes: '' }];
+      return prev.filter((_, i) => i !== idx);
+    });
+  const updateSalePayment = (idx, field, val) =>
+    setSalePayments(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
 
   const fetchData = useCallback(async (params = {}) => {
     setLoading(true);
@@ -150,6 +161,8 @@ const SalesPage = () => {
       });
       setSelectedCustomerDetails(null);
       setItems([{ ...EMPTY_ITEM }]);
+      setIsMultiPayment(false);
+      setSalePayments([{ payment_type_id: '', amount: '', notes: '' }]);
     }
     setIsModalOpen(true);
   };
@@ -213,7 +226,23 @@ const SalesPage = () => {
       }
     }
 
-    if (Number(formData.paid_amount) > 0 && !formData.payment_type_id) {
+    const validPayments = isMultiPayment
+      ? salePayments.filter(p => p.payment_type_id && Number(p.amount) > 0).map(p => ({
+          payment_type_id: Number(p.payment_type_id),
+          amount: Number(p.amount),
+          notes: p.notes || ''
+        }))
+      : (Number(formData.paid_amount) > 0 && formData.payment_type_id ? [{
+          payment_type_id: Number(formData.payment_type_id),
+          amount: Number(formData.paid_amount),
+          notes: ''
+        }] : []);
+
+    const totalPaidAmount = isMultiPayment
+      ? validPayments.reduce((s, p) => s + p.amount, 0)
+      : Number(formData.paid_amount || 0);
+
+    if (totalPaidAmount > 0 && validPayments.length === 0) {
       return toast.error('يجب اختيار طريقة الدفع للمبلغ المدفوع');
     }
 
@@ -221,8 +250,11 @@ const SalesPage = () => {
     try {
       const payload = {
         date: formData.date,
-        paid_amount: Number(formData.paid_amount || 0),
-        payment_type_id: formData.payment_type_id || undefined,
+        paid_amount: totalPaidAmount,
+        payment_type_id: isMultiPayment
+          ? (validPayments[0]?.payment_type_id || undefined)
+          : (formData.payment_type_id || undefined),
+        payments: validPayments,
         use_customer_credit: formData.use_customer_credit,
         notes: formData.notes,
         receipt_image: formData.receipt_image || null,
@@ -845,41 +877,71 @@ const SalesPage = () => {
               )}
             </div>
           )}
-          <div style={{ display: 'flex', gap: '16px' }}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label className="form-label">مبلغ نقدي مدفوع الآن (اختياري)</label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                className="form-input"
-                value={formData.paid_amount}
-                onChange={(e) => setFormData(prev => ({ ...prev, paid_amount: e.target.value }))}
-                placeholder="في حال استلام نقدية ستدخل الخزينة فوراً"
-              />
-              {Number(formData.paid_amount) > 0 && (
-                <div style={{ marginTop: '4px' }}>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--success)', display: 'block' }}>
-                    ✓ سيتم توريد {Number(formData.paid_amount).toFixed(2)} ج.م للخزينة فوراً.
-                  </span>
-                  {(() => {
-                    const creditToUse = (selectedCustomerDetails && Number(selectedCustomerDetails.total_payments) > 0 && formData.use_customer_credit)
-                      ? Math.min(Number(selectedCustomerDetails.total_payments), invoiceTotal)
-                      : 0;
-                    const netRequired = Math.max(0, invoiceTotal - creditToUse);
-                    const overpaid = Number(formData.paid_amount) > netRequired ? (Number(formData.paid_amount) - netRequired) : 0;
-                    if (overpaid > 0) {
-                      return (
-                        <span style={{ fontSize: '0.82rem', color: '#0284c7', marginTop: '3px', display: 'block', fontWeight: 600 }}>
-                          💡 سداد الفاتورة بالكامل ({netRequired.toFixed(2)} ج.م) + إضافة الباقي ({overpaid.toFixed(2)} ج.م) لرصيد العميل.
-                        </span>
-                      );
-                    }
-                    return null;
-                  })()}
-                </div>
-              )}
-            </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <span style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-main)' }}>
+              💳 تفاصيل السداد وطريقة الدفع
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setIsMultiPayment(prev => {
+                  if (!prev && formData.paid_amount) {
+                    setSalePayments([{ payment_type_id: formData.payment_type_id || '', amount: formData.paid_amount, notes: '' }]);
+                  }
+                  return !prev;
+                });
+              }}
+              style={{
+                background: isMultiPayment ? '#eff6ff' : '#f8fafc',
+                color: isMultiPayment ? '#2563eb' : 'var(--text-muted)',
+                border: `1.5px solid ${isMultiPayment ? '#93c5fd' : 'var(--border-color)'}`,
+                borderRadius: 8,
+                padding: '4px 10px',
+                fontSize: '0.78rem',
+                fontWeight: 700,
+                cursor: 'pointer'
+              }}
+            >
+              {isMultiPayment ? 'إلغاء التعدد (دفع موحد)' : '⚡ تعدد بنود الدفع (كاش + انستاباي...)'}
+            </button>
+          </div>
+
+          {!isMultiPayment ? (
+            <div style={{ display: 'flex', gap: '16px' }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="form-label">مبلغ نقدي مدفوع الآن (اختياري)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  className="form-input"
+                  value={formData.paid_amount}
+                  onChange={(e) => setFormData(prev => ({ ...prev, paid_amount: e.target.value }))}
+                  placeholder="في حال استلام نقدية ستدخل الخزينة فوراً"
+                />
+                {Number(formData.paid_amount) > 0 && (
+                  <div style={{ marginTop: '4px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--success)', display: 'block' }}>
+                      ✓ سيتم توريد {Number(formData.paid_amount).toFixed(2)} ج.م للخزينة فوراً.
+                    </span>
+                    {(() => {
+                      const creditToUse = (selectedCustomerDetails && Number(selectedCustomerDetails.total_payments) > 0 && formData.use_customer_credit)
+                        ? Math.min(Number(selectedCustomerDetails.total_payments), invoiceTotal)
+                        : 0;
+                      const netRequired = Math.max(0, invoiceTotal - creditToUse);
+                      const overpaid = Number(formData.paid_amount) > netRequired ? (Number(formData.paid_amount) - netRequired) : 0;
+                      if (overpaid > 0) {
+                        return (
+                          <span style={{ fontSize: '0.82rem', color: '#0284c7', marginTop: '3px', display: 'block', fontWeight: 600 }}>
+                            💡 سداد الفاتورة بالكامل ({netRequired.toFixed(2)} ج.م) + إضافة الباقي ({overpaid.toFixed(2)} ج.م) لرصيد العميل.
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
+                )}
+              </div>
 
               {Number(formData.paid_amount) > 0 && (
                 <div className="form-group" style={{ flex: 1 }}>
@@ -897,12 +959,98 @@ const SalesPage = () => {
                 </div>
               )}
             </div>
+          ) : (
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, marginBottom: 14 }}>
+              <div style={{
+                display: 'grid', gridTemplateColumns: '2fr 1.5fr 2fr 36px', gap: 8,
+                background: '#f1f5f9', padding: '6px 10px', borderRadius: 6,
+                fontSize: '0.75rem', fontWeight: 700, color: '#475569', marginBottom: 8
+              }}>
+                <span>طريقة الدفع *</span>
+                <span>المبلغ (ج.م) *</span>
+                <span>ملاحظات / رقم الحوالة</span>
+                <span></span>
+              </div>
 
-            {/* Bank Receipt Upload for Sales */}
-            {(() => {
-              const selectedPT = paymentTypes.find(p => String(p.id) === String(formData.payment_type_id));
-              const isBank = selectedPT?.channel === 'bank';
-              if (!isBank || Number(formData.paid_amount) <= 0) return null;
+              {salePayments.map((pRow, pIdx) => (
+                <div key={pIdx} style={{ display: 'grid', gridTemplateColumns: '2fr 1.5fr 2fr 36px', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                  <select
+                    className="form-select"
+                    value={pRow.payment_type_id}
+                    onChange={e => updateSalePayment(pIdx, 'payment_type_id', e.target.value)}
+                  >
+                    <option value="">-- اختر طريقة الدفع --</option>
+                    {paymentTypes.map(pt => (
+                      <option key={pt.id} value={pt.id}>{pt.name}</option>
+                    ))}
+                  </select>
+
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className="form-input"
+                    value={pRow.amount}
+                    onChange={e => updateSalePayment(pIdx, 'amount', e.target.value)}
+                    placeholder="المبلغ"
+                  />
+
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={pRow.notes}
+                    onChange={e => updateSalePayment(pIdx, 'notes', e.target.value)}
+                    placeholder="ملاحظات الحوالة"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => removeSalePayment(pIdx)}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: '#dc2626', display: 'flex', alignItems: 'center', justifyContent: 'center'
+                    }}
+                    title="حذف هذا البند"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                <button
+                  type="button"
+                  onClick={addSalePayment}
+                  style={{
+                    background: '#fff', border: '1px dashed #0284c7', color: '#0284c7',
+                    borderRadius: 6, padding: '5px 10px', fontSize: '0.78rem', fontWeight: 700,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4
+                  }}
+                >
+                  <Plus size={14} /> إضافة طريقة دفع أخرى
+                </button>
+
+                <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--success)' }}>
+                  إجمالي المدفوع: {salePayments.reduce((s, p) => s + (Number(p.amount) || 0), 0).toFixed(2)} ج.م
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Bank Receipt Upload for Sales */}
+          {(() => {
+            const hasBank = isMultiPayment
+              ? salePayments.some(p => {
+                  const pt = paymentTypes.find(x => String(x.id) === String(p.payment_type_id));
+                  return pt?.channel === 'bank';
+                })
+              : paymentTypes.find(p => String(p.id) === String(formData.payment_type_id))?.channel === 'bank';
+
+            const paidCheck = isMultiPayment
+              ? salePayments.some(p => Number(p.amount) > 0)
+              : Number(formData.paid_amount) > 0;
+
+            if (!hasBank || !paidCheck) return null;
               return (
                 <div className="form-group" style={{
                   background: 'rgba(217, 119, 6, 0.05)', border: '1.5px dashed #d97706',

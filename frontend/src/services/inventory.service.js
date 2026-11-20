@@ -34,5 +34,41 @@ export const inventoryService = {
   getGroupedInventory: async () => {
     const { data } = await api.get('/inventory/grouped');
     return data;
+  },
+
+  // ── Sections (أقسام المخزن) ──
+  getSections: async (params) => {
+    const { data } = await api.get('/inventory/sections', { params });
+    return data;
+  },
+
+  getSectionById: async (id) => {
+    const { data } = await api.get(`/inventory/sections/${id}`);
+    return data;
+  },
+
+  createSection: async (sectionData) => {
+    const { data } = await api.post('/inventory/sections', sectionData);
+    return data;
+  },
+
+  updateSection: async (id, sectionData) => {
+    const { data } = await api.put(`/inventory/sections/${id}`, sectionData);
+    return data;
+  },
+
+  deleteSection: async (id) => {
+    const { data } = await api.delete(`/inventory/sections/${id}`);
+    return data;
+  },
+
+  assignItemToSection: async (payload) => {
+    const { data } = await api.post('/inventory/sections/assign', payload);
+    return data;
+  },
+
+  getSectionsWithItems: async () => {
+    const { data } = await api.get('/inventory/sections/with-items');
+    return data;
   }
 };

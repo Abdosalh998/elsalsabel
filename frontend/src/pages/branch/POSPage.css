@@ -53,6 +53,7 @@
   scrollbar-width: none;
   padding-bottom: 2px;
 }
+
 .pos-tabs-bar::-webkit-scrollbar {
   display: none;
 }
@@ -170,23 +171,23 @@
 }
 
 .pos-sale-items-table {
-  min-width: 480px;
+  min-width: 620px;
 }
 
 .pos-sale-items-row {
   display: grid;
-  grid-template-columns: 1fr 90px 70px 90px 32px;
+  grid-template-columns: 135px 1.2fr 85px 65px 85px 32px;
   gap: 8px;
   align-items: center;
 }
 
 .pos-returns-table {
-  min-width: 540px;
+  min-width: 720px;
 }
 
 .pos-returns-row {
   display: grid;
-  grid-template-columns: 1.2fr 85px 75px 85px 95px 32px;
+  grid-template-columns: 1.1fr 1.3fr 85px 75px 85px 95px 32px;
   gap: 8px;
   align-items: center;
 }
@@ -206,17 +207,20 @@
 
 @media (max-width: 900px) {
   .pos-content-grid {
-    grid-template-columns: 1fr !important; /* Single column on tablet & mobile */
+    grid-template-columns: 1fr !important;
+    /* Single column on tablet & mobile */
     gap: 18px;
     padding: 16px 12px;
   }
 
   .pos-form-container {
-    order: 1 !important; /* Form ALWAYS comes FIRST */
+    order: 1 !important;
+    /* Form ALWAYS comes FIRST */
   }
 
   .pos-sidebar-panel {
-    order: 2 !important; /* Activity panel stacks BELOW the form */
+    order: 2 !important;
+    /* Activity panel stacks BELOW the form */
   }
 
   .pos-tab-button {
@@ -277,4 +281,3 @@
     padding: 8px 6px;
   }
 }
-

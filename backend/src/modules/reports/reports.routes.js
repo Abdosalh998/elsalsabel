@@ -9,7 +9,10 @@ const {
   getExpensesReport,
   getCustomersReport,
   getColoringReport,
-  getCustodyReport
+  getCustodyReport,
+  getCustodyTransfersReport,
+  getBranchTransfersReport,
+  getJardReport
 } = require('./reports.controller');
 const { authenticate } = require('../../middleware/auth');
 
@@ -24,5 +27,8 @@ router.get('/expenses', getExpensesReport);
 router.get('/customers', getCustomersReport);
 router.get('/coloring', getColoringReport);
 router.get('/custody', getCustodyReport);
+router.get('/custody-transfers', getCustodyTransfersReport);
+router.get('/branch-transfers', getBranchTransfersReport);
+router.get('/jard', getJardReport);
 
 module.exports = router;

@@ -15,6 +15,7 @@ import { expensesService } from '../../services/expenses.service';
 import { customerService } from '../../services/customer.service';
 import { inventoryService } from '../../services/inventory.service';
 import { treasuryService } from '../../services/treasury.service';
+import { jardService } from '../../services/jard.service';
 import custodyService from '../../services/custody.service';
 import { useAuth } from '../../context/AuthContext';
 import PrintableInvoice from '../../components/sales/PrintableInvoice';
@@ -39,7 +40,7 @@ const CHANNEL_OPTIONS = [
   { value: 'bank', label: 'إيداع بنكي', icon: Landmark },
 ];
 
-const EMPTY_SALE_ITEM = { inventory_id: '', weight: '', rolls_count: '1', price: '' };
+const EMPTY_SALE_ITEM = { section_id: '', inventory_id: '', weight: '', rolls_count: '1', price: '' };
 const EMPTY_RETURN_ITEM = { inventory_id: '', product: '', company: '', weight: '', rolls_count: '', price_per_ton: '', total: '', notes: '' };
 const EMPTY_EXPENSE_ITEM = { description: '', amount: '', notes: '' };
 
@@ -143,9 +144,17 @@ const POSPage = () => {
   // Shared dropdown data
   const [customers, setCustomers] = useState([]);
   const [inventoryList, setInventoryList] = useState([]);
+  const [sectionsList, setSectionsList] = useState([]);
+  const [jardList, setJardList] = useState([]);
+  const [deductionSource, setDeductionSource] = useState('general'); // 'general' (المخزن العام) | 'jard' (رصيد الجرد)
   const [paymentTypes, setPaymentTypes] = useState([]);
   const [expenseDescs, setExpenseDescs] = useState([]);
   const [purchaseProds, setPurchaseProds] = useState([]);
+
+  const handleDeductionSourceChange = (src) => {
+    setDeductionSource(src);
+    setSaleItems([{ ...EMPTY_SALE_ITEM }]);
+  };
 
   // ── SALE Form ──────────────────────────────────────────────────
   const [saleForm, setSaleForm] = useState({
@@ -167,6 +176,8 @@ const POSPage = () => {
   const [saleReturns, setSaleReturns] = useState([]);
   const [addRemainingReturnToBalance, setAddRemainingReturnToBalance] = useState(true);
   const [customerDetails, setCustomerDetails] = useState(null);
+  const [isMultiPayment, setIsMultiPayment] = useState(false);
+  const [salePayments, setSalePayments] = useState([{ payment_type_id: '', amount: '', notes: '' }]);
 
   // ── UNIFIED STORE / PURCHASE Form ──────────────────────────────
   const [purchaseForm, setPurchaseForm] = useState({
@@ -308,13 +319,15 @@ const POSPage = () => {
   useEffect(() => {
     const load = async () => {
       try {
-        const [custRes, invRes, ptRes, expDesc, purchProds, invUnique] = await Promise.all([
+        const [custRes, invRes, ptRes, expDesc, purchProds, invUnique, secRes, jardRes] = await Promise.all([
           customerService.getCustomers({ limit: 1000 }),
           inventoryService.getGroupedInventory(),
           treasuryService.getPaymentTypes(),
           expensesService.getUniqueValues(),
           purchasesService.getUniqueValues(),
           inventoryService.getUniqueValues(),
+          inventoryService.getSectionsWithItems().catch(() => ({ data: [] })),
+          jardService.getJardForPOS().catch(() => ({ data: [] })),
         ]);
         setCustomers(custRes.data.customers || []);
         setInventoryList(invRes.data || []);
@@ -323,6 +336,8 @@ const POSPage = () => {
         setPurchaseProds(purchProds.data?.products || []);
         setInvCompanies(invUnique.data?.companies || []);
         setInvProducts(invUnique.data?.products || []);
+        setSectionsList(secRes?.data || []);
+        setJardList(jardRes?.data || []);
         fetchCustodyPersons();
       } catch (e) {
         console.error(e);
@@ -373,7 +388,9 @@ const POSPage = () => {
     : 0;
   const creditUsed = Math.min(creditAvailable, saleTotal);
   const afterCredit = saleTotal - creditUsed;
-  const salePaid = parseFloat(saleForm.paid_amount) || 0;
+  const salePaid = isMultiPayment
+    ? salePayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
+    : (parseFloat(saleForm.paid_amount) || 0);
   const saleRemainingBeforeSettlement = afterCredit - salePaid;
   const saleSettlement = parseFloat(saleForm.settlement_amount) || 0;
   const effectiveSaleSettlement = Math.min(saleSettlement, Math.max(0, saleRemainingBeforeSettlement));
@@ -408,17 +425,51 @@ const POSPage = () => {
       return;
     }
 
+    if (deductionSource === 'jard') {
+      for (const it of validItems) {
+        const jItem = jardList.find(x => String(x.id) === String(it.inventory_id));
+        const reqR = parseInt(it.rolls_count) || 1;
+        if (jItem && reqR > Number(jItem.available_rolls || 0)) {
+          toast.error(`عدد اللفات المطلوب للصنف "${jItem.product}" (${reqR} لفة) يتجاوز رصيد الجرد المتاح (${jItem.available_rolls} لفة)`);
+          return;
+        }
+      }
+    } else {
+      // Check section weights
+      const secUsage = {};
+      for (const it of validItems) {
+        const sId = it.section_id;
+        if (sId) {
+          secUsage[sId] = (secUsage[sId] || 0) + (parseFloat(it.weight) || 0);
+        }
+      }
+      for (const [sId, neededW] of Object.entries(secUsage)) {
+        const sec = sectionsList.find(s => String(s.id) === String(sId));
+        if (sec) {
+          const avail = Number(sec.available_weight ?? (sec.total_weight - sec.issued_weight));
+          if (neededW > avail) {
+            toast.error(`وزن القسم "${sec.name}" غير كافٍ. المطلوب: ${neededW} كجم، والمتاح: ${avail.toFixed(2)} كجم`);
+            return;
+          }
+        }
+      }
+    }
+
     setIsSubmitting(true);
     try {
       const payload = {
         date: saleForm.date,
+        deduction_source: deductionSource,
         customer_id: saleForm.isNewCustomer ? null : (saleForm.customer_id || saleForm.customer?.id),
         customer_name: saleForm.isNewCustomer ? saleForm.customer_name : undefined,
         phone: saleForm.isNewCustomer ? saleForm.phone : undefined,
         saveNewCustomer: saleForm.isNewCustomer ? saleForm.saveNewCustomer : undefined,
         save_new_customer: saleForm.isNewCustomer ? saleForm.saveNewCustomer : undefined,
         items: validItems.map(i => ({
-          inventory_id: i.inventory_id,
+          inventory_id: deductionSource === 'general' ? i.inventory_id : null,
+          jard_id: deductionSource === 'jard' ? i.inventory_id : null,
+          deduction_source: deductionSource,
+          section_id: i.section_id ? parseInt(i.section_id) : undefined,
           weight: parseFloat(i.weight),
           rolls_count: parseInt(i.rolls_count) || 1,
           price: parseFloat(i.price),
@@ -436,7 +487,20 @@ const POSPage = () => {
         add_remaining_to_balance: addRemainingReturnToBalance,
         paid_amount: salePaid,
         settlement_amount: effectiveSaleSettlement,
-        payment_type_id: saleForm.payment_type_id || null,
+        payment_type_id: isMultiPayment
+          ? (salePayments.find(p => p.payment_type_id && parseFloat(p.amount) > 0)?.payment_type_id || null)
+          : (saleForm.payment_type_id || null),
+        payments: isMultiPayment
+          ? salePayments.filter(p => p.payment_type_id && parseFloat(p.amount) > 0).map(p => ({
+              payment_type_id: parseInt(p.payment_type_id),
+              amount: parseFloat(p.amount),
+              notes: p.notes || ''
+            }))
+          : (salePaid > 0 && saleForm.payment_type_id ? [{
+              payment_type_id: parseInt(saleForm.payment_type_id),
+              amount: salePaid,
+              notes: ''
+            }] : []),
         notes: saleForm.notes,
         use_customer_credit: saleForm.use_customer_credit,
         receipt_image: saleForm.receipt_image || null,
@@ -452,8 +516,14 @@ const POSPage = () => {
       }
       refreshCustomers();
       try {
-        const invRes = await inventoryService.getGroupedInventory();
+        const [invRes, secRes, jRes] = await Promise.all([
+          inventoryService.getGroupedInventory(),
+          inventoryService.getSectionsWithItems().catch(() => ({ data: [] })),
+          jardService.getJardForPOS().catch(() => ({ data: [] }))
+        ]);
         setInventoryList(invRes.data || []);
+        setSectionsList(secRes?.data || []);
+        setJardList(jRes?.data || []);
       } catch (e) {
         console.error('Failed to reload inventory', e);
       }
@@ -719,6 +789,8 @@ const POSPage = () => {
     setSaleReturns([]);
     setAddRemainingReturnToBalance(true);
     setCustomerDetails(null);
+    setIsMultiPayment(false);
+    setSalePayments([{ payment_type_id: '', amount: '', notes: '' }]);
   };
 
   const resetPurchaseForm = () => {
@@ -804,7 +876,9 @@ const POSPage = () => {
       if (field === 'inventory_id' && val) {
         const inv = inventoryList.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val));
         if (inv) {
-          updated.product = inv.product;
+          if (!updated.product) {
+            updated.product = inv.product;
+          }
           updated.company = inv.company || (inv.company_items ? inv.company_items.map(c => c.company).join(' / ') : '');
         }
       }
@@ -818,6 +892,16 @@ const POSPage = () => {
       }
       return updated;
     }));
+
+  // ─── Sale Payments Helpers (Multi-payment) ───────────────────────
+  const addSalePayment = () => setSalePayments(prev => [...prev, { payment_type_id: '', amount: '', notes: '' }]);
+  const removeSalePayment = (idx) =>
+    setSalePayments(prev => {
+      if (prev.length <= 1) return [{ payment_type_id: '', amount: '', notes: '' }];
+      return prev.filter((_, i) => i !== idx);
+    });
+  const updateSalePayment = (idx, field, val) =>
+    setSalePayments(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
 
   // ─── Expense Items Helpers ──────────────────────────────────────
   const addExpenseItem = () => setExpenseItems(prev => [...prev, { ...EMPTY_EXPENSE_ITEM }]);
@@ -1073,14 +1157,19 @@ const POSPage = () => {
           <div className="pos-form-content">
             {activeTab === 'sale' && (
               <SaleForm {...{
-                saleForm, setSaleForm, saleItems, saleTotal,
+                saleForm, setSaleForm, saleItems, setSaleItems, saleTotal,
                 saleGrossTotal, saleReturnsTotal, returnExcess,
                 saleReturns, addSaleReturn, removeSaleReturn, updateSaleReturn,
                 addRemainingReturnToBalance, setAddRemainingReturnToBalance,
                 creditAvailable, creditUsed, afterCredit, salePaid, saleRemaining,
                 saleRemainingBeforeSettlement, effectiveSaleSettlement,
-                customers, inventoryList, paymentTypes, customerDetails,
-                addSaleItem, removeSaleItem, updateSaleItem, isSubmitting, onSubmit: handleSaleSubmit
+                customers, inventoryList, sectionsList, paymentTypes, customerDetails,
+                addSaleItem, removeSaleItem, updateSaleItem,
+                isMultiPayment, setIsMultiPayment, salePayments, setSalePayments,
+                addSalePayment, removeSalePayment, updateSalePayment,
+                deductionSource, setDeductionSource, jardList,
+                onDeductionSourceChange: handleDeductionSourceChange,
+                isSubmitting, onSubmit: handleSaleSubmit
               }} />
             )}
             {activeTab === 'store' && (
@@ -1210,14 +1299,19 @@ const POSPage = () => {
 // Sub-form: Sale
 // ═══════════════════════════════════════════════════════════════
 const SaleForm = ({
-  saleForm, setSaleForm, saleItems, saleTotal,
+  saleForm, setSaleForm, saleItems, setSaleItems, saleTotal,
   saleGrossTotal = 0, saleReturnsTotal = 0, returnExcess = 0,
   saleReturns = [], addSaleReturn, removeSaleReturn, updateSaleReturn,
   addRemainingReturnToBalance, setAddRemainingReturnToBalance,
   creditAvailable, creditUsed, afterCredit, salePaid, saleRemaining,
   saleRemainingBeforeSettlement = 0, effectiveSaleSettlement = 0,
-  customers, inventoryList, paymentTypes, customerDetails,
-  addSaleItem, removeSaleItem, updateSaleItem, isSubmitting, onSubmit
+  customers, inventoryList, sectionsList = [], paymentTypes, customerDetails,
+  addSaleItem, removeSaleItem, updateSaleItem,
+  isMultiPayment = false, setIsMultiPayment, salePayments = [], setSalePayments,
+  addSalePayment, removeSalePayment, updateSalePayment,
+  deductionSource = 'general', setDeductionSource, jardList = [],
+  onDeductionSourceChange,
+  isSubmitting, onSubmit
 }) => {
   const fieldStyle = {
     width: '100%', padding: '9px 12px', border: '1.5px solid #e2e8f0',
@@ -1276,8 +1370,60 @@ const SaleForm = ({
 
       {/* Items */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <label style={{ ...labelStyle, marginBottom: 0 }}><Package size={12} style={{ marginLeft: 4 }} />البنود المباعة</label>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <label style={{ ...labelStyle, marginBottom: 0 }}><Package size={12} style={{ marginLeft: 4 }} />البنود المباعة</label>
+            {/* خيار جهة الخصم */}
+            <div style={{ display: 'inline-flex', background: '#f1f5f9', padding: '2px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeductionSourceChange) {
+                    onDeductionSourceChange('general');
+                  } else {
+                    setDeductionSource?.('general');
+                    if (typeof setSaleItems === 'function') {
+                      setSaleItems([{ ...EMPTY_SALE_ITEM }]);
+                    }
+                  }
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4, padding: '4px 9px', borderRadius: 6,
+                  fontSize: '0.74rem', fontWeight: 700, border: 'none', cursor: 'pointer',
+                  background: deductionSource === 'general' ? '#1e293b' : 'transparent',
+                  color: deductionSource === 'general' ? '#ffffff' : '#64748b',
+                  transition: 'all 0.15s'
+                }}
+              >
+                <Package size={12} />
+                الخصم من المخزن العام
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeductionSourceChange) {
+                    onDeductionSourceChange('jard');
+                  } else {
+                    setDeductionSource?.('jard');
+                    if (typeof setSaleItems === 'function') {
+                      setSaleItems([{ ...EMPTY_SALE_ITEM }]);
+                    }
+                  }
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4, padding: '4px 9px', borderRadius: 6,
+                  fontSize: '0.74rem', fontWeight: 700, border: 'none', cursor: 'pointer',
+                  background: deductionSource === 'jard' ? '#0284c7' : 'transparent',
+                  color: deductionSource === 'jard' ? '#ffffff' : '#64748b',
+                  transition: 'all 0.15s'
+                }}
+              >
+                <Layers size={12} />
+                الخصم من رصيد الجرد
+              </button>
+            </div>
+          </div>
+
           <button type="button" onClick={addSaleItem}
             style={{
               display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', fontWeight: 700,
@@ -1293,7 +1439,7 @@ const SaleForm = ({
           <div className="pos-sale-items-row" style={{
             background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '8px 10px', fontSize: '0.74rem', fontWeight: 700, color: '#64748b'
           }}>
-            <span>الصنف / المنتج</span><span>الوزن (كجم)</span><span>اللفات</span><span>السعر</span><span></span>
+            <span>القسم</span><span>الصنف / المنتج</span><span>الوزن (كجم)</span><span>اللفات</span><span>السعر</span><span></span>
           </div>
 
           {saleItems.length === 0 ? (
@@ -1315,35 +1461,148 @@ const SaleForm = ({
             </div>
           ) : (
             saleItems.map((item, i) => {
-              const selectedInv = inventoryList.find(inv => String(inv.sample_id) === String(item.inventory_id) || String(inv.id) === String(item.inventory_id));
+              const selectedInv = deductionSource === 'general'
+                ? inventoryList.find(inv => String(inv.sample_id) === String(item.inventory_id) || String(inv.id) === String(item.inventory_id))
+                : null;
+              const selectedJard = deductionSource === 'jard'
+                ? jardList.find(j => String(j.id) === String(item.inventory_id))
+                : null;
+
               const availW = selectedInv ? Number(selectedInv.total_available_weight ?? selectedInv.available_quantity ?? selectedInv.remaining_weight ?? 0) : null;
               const availR = selectedInv ? Number(selectedInv.total_available_rolls ?? 0) : null;
-              const isOverWeight = selectedInv && Number(item.weight || 0) > availW;
+
+              const selectedSec = sectionsList.find(s => String(s.id) === String(item.section_id));
+              const secAvail = selectedSec ? Number(selectedSec.available_weight ?? (selectedSec.total_weight - selectedSec.issued_weight)) : null;
+              const isOverSecWeight = (deductionSource === 'general') && selectedSec && Number(item.weight || 0) > secAvail;
+              const isOverWeight = (deductionSource === 'general') && !selectedSec && selectedInv && Number(item.weight || 0) > availW;
+              const isOverJardRolls = (deductionSource === 'jard') && selectedJard && Number(item.rolls_count || 1) > Number(selectedJard.available_rolls || 0);
+
+              // Filter products based on selected section
+              let productsForSection = [];
+              if (deductionSource === 'jard') {
+                productsForSection = item.section_id
+                  ? jardList.filter(j => String(j.section_id) === String(item.section_id))
+                  : jardList;
+              } else if (item.section_id) {
+                const currentSec = sectionsList.find(s => String(s.id) === String(item.section_id));
+                if (currentSec) {
+                  // الأصناف المربوطة حصراً بهذا القسم
+                  const secItems = currentSec.items || [];
+                  const mapped = secItems.map(si => {
+                    const matched = inventoryList.find(inv =>
+                      String(inv.sample_id) === String(si.id) || String(inv.id) === String(si.id)
+                    );
+                    return matched || {
+                      id: si.id,
+                      sample_id: si.id,
+                      product: si.product,
+                      company: si.company,
+                      section_id: currentSec.id,
+                      section_name: currentSec.name,
+                      price_per_kg: si.price_per_kg || 0,
+                      roll_price: si.roll_price || 0,
+                      total_available_weight: 0,
+                      available_quantity: 0,
+                      total_available_rolls: 0,
+                      available_rolls: 0,
+                    };
+                  });
+
+                  // الأصناف المربوطة بالقسم فقط من السيرفر (getSectionsWithItems هو المرجع الموثوق)
+                  productsForSection = mapped;
+                }
+              } else {
+                productsForSection = inventoryList;
+              }
 
               return (
                 <div key={i} style={{ borderBottom: i < saleItems.length - 1 ? '1px solid #f1f5f9' : 'none', padding: '8px 10px' }}>
                   <div className="pos-sale-items-row" style={{ alignItems: 'center' }}>
-                    <select value={item.inventory_id}
-                      onChange={e => updateSaleItem(i, 'inventory_id', e.target.value)}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}>
-                      <option value="">-- اختر الصنف / المنتج --</option>
-                      {inventoryList.map(inv => {
-                        const w = Number(inv.total_available_weight ?? inv.available_quantity ?? inv.remaining_weight ?? 0);
-                        const r = Number(inv.total_available_rolls ?? Math.max(0, Number(inv.available_rolls ?? (Number(inv.count || 0) - Number(inv.issued_rolls || 0)))));
-                        const key = inv.sample_id ?? inv.id;
+                    {/* Section Selector */}
+                    <select
+                      value={item.section_id || ''}
+                      onChange={e => {
+                        const secId = e.target.value;
+                        updateSaleItem(i, 'section_id', secId);
+                        if (secId) {
+                          const sec = sectionsList.find(s => String(s.id) === String(secId));
+                          const inSec = sec?.items?.some(it => String(it.id) === String(item.inventory_id));
+                          if (!inSec) updateSaleItem(i, 'inventory_id', '');
+                        }
+                      }}
+                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                    >
+                      <option value="">-- كل الأقسام --</option>
+                      {sectionsList.map(sec => {
+                        const sAvail = Number(sec.available_weight ?? (sec.total_weight - sec.issued_weight));
                         return (
-                          <option key={key} value={key}>
-                            {inv.product} — متاح: {w.toFixed(2)} كجم | {r} لفة
+                          <option key={sec.id} value={sec.id} disabled={sAvail <= 0}>
+                            {sec.name} {sAvail <= 0 ? '(نفذ)' : `— متاح: ${sAvail.toFixed(2)} كجم`}
                           </option>
                         );
                       })}
                     </select>
+
+                    {/* Product Selector */}
+                    <select value={item.inventory_id}
+                      onChange={e => {
+                        const val = e.target.value;
+                        updateSaleItem(i, 'inventory_id', val);
+                        if (deductionSource === 'jard') {
+                          const jItem = jardList.find(x => String(x.id) === String(val));
+                          if (jItem && !item.section_id && jItem.section_id) {
+                            updateSaleItem(i, 'section_id', String(jItem.section_id));
+                          }
+                        } else {
+                          const inv = productsForSection.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val))
+                            || inventoryList.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val));
+                          if (inv) {
+                            if (inv.price_per_kg && !item.price) {
+                              updateSaleItem(i, 'price', inv.price_per_kg);
+                            }
+                            if (!item.section_id && inv.section_id) {
+                              updateSaleItem(i, 'section_id', String(inv.section_id));
+                            }
+                          }
+                        }
+                      }}
+                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}>
+                      <option value="">
+                        {deductionSource === 'jard'
+                          ? (productsForSection.length === 0 ? '-- لا توجد أصناف متاحة بالجرد لهذا القسم --' : '-- اختر صنف الجرد --')
+                          : (item.section_id && productsForSection.length === 0
+                              ? '-- لا توجد أصناف مربوطة بهذا القسم --'
+                              : '-- اختر الصنف / المنتج --')}
+                      </option>
+                      {deductionSource === 'jard' ? (
+                        productsForSection.map(j => (
+                          <option key={j.id} value={j.id}>
+                            {j.product} [{j.company}] — (متاح بالجرد: {j.available_rolls} لفة | {fmt(j.available_weight)} كجم)
+                          </option>
+                        ))
+                      ) : (
+                        productsForSection.map(inv => {
+                          const w = Number(inv.total_available_weight ?? inv.available_quantity ?? inv.remaining_weight ?? 0);
+                          const r = Number(inv.total_available_rolls ?? Math.max(0, Number(inv.available_rolls ?? (Number(inv.count || 0) - Number(inv.issued_rolls || 0)))));
+                          const key = inv.sample_id ?? inv.id;
+                          const displayLabel = item.section_id
+                            ? (r > 0 ? `${inv.product} — (${r} لفة)` : inv.product)
+                            : (w > 0 ? `${inv.product} — متاح: ${w.toFixed(2)} كجم | ${r} لفة` : inv.product);
+                          return (
+                            <option key={key} value={key}>
+                              {displayLabel}
+                            </option>
+                          );
+                        })
+                      )}
+                    </select>
+
                     <input type="number" placeholder="الوزن كجم" value={item.weight} min="0" step="0.001"
                       onChange={e => updateSaleItem(i, 'weight', e.target.value)}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem', borderColor: isOverWeight ? '#ef4444' : '#e2e8f0' }} />
+                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem', borderColor: (isOverWeight || isOverSecWeight) ? '#ef4444' : '#e2e8f0' }} />
                     <input type="number" placeholder="اللفات" value={item.rolls_count} min="1"
                       onChange={e => updateSaleItem(i, 'rolls_count', e.target.value)}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }} />
+                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem', borderColor: isOverJardRolls ? '#ef4444' : '#e2e8f0' }} />
                     <input type="number" placeholder="السعر" value={item.price} min="0" step="0.01"
                       onChange={e => updateSaleItem(i, 'price', e.target.value)}
                       style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }} />
@@ -1353,15 +1612,45 @@ const SaleForm = ({
                       <Trash2 size={15} />
                     </button>
                   </div>
-                  {/* Stock availability indicator & warnings */}
-                  {selectedInv && (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingRight: 4, fontSize: '0.74rem' }}>
-                      <span style={{ color: '#0369a1', fontWeight: 600 }}>
-                        📦 المتاح بالمخزن: <strong>{availW.toFixed(2)} كجم</strong> ({availR} لفة)
-                      </span>
-                      {isOverWeight && (
+
+                  {/* Stock & Section / Jard availability indicator & warnings */}
+                  {deductionSource === 'jard' && selectedJard ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4, paddingRight: 4, fontSize: '0.74rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ color: '#0284c7', fontWeight: 700 }}>
+                          📋 رصيد الجرد المتاح: <strong>{selectedJard.available_rolls} لفة</strong> ({fmt(selectedJard.available_weight)} كجم)
+                        </span>
+                        {selectedJard.company && (
+                          <span style={{ color: '#64748b' }}>[{selectedJard.company}]</span>
+                        )}
+                      </div>
+                      {isOverJardRolls && (
+                        <div style={{ color: '#dc2626', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <AlertTriangle size={13} /> تحذير: عدد اللفات المطلوب ({item.rolls_count || 1} لفة) يتجاوز رصيد الجرد المتاح ({selectedJard.available_rolls} لفة)!
+                        </div>
+                      )}
+                    </div>
+                  ) : (selectedInv || selectedSec) && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4, paddingRight: 4, fontSize: '0.74rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                        {selectedSec ? (
+                          <span style={{ color: '#7c3aed', fontWeight: 700 }}>
+                            🏷️ رصيد قسم ({selectedSec.name}): <strong>{secAvail.toFixed(2)} كجم متاح</strong>
+                          </span>
+                        ) : selectedInv && (
+                          <span style={{ color: '#0369a1', fontWeight: 600 }}>
+                            📦 المتاح بالصنف بالمخزن: <strong>{availW.toFixed(2)} كجم</strong> ({availR} لفة)
+                          </span>
+                        )}
+                      </div>
+                      {isOverSecWeight && (
+                        <div style={{ color: '#dc2626', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <AlertTriangle size={13} /> خطأ: الوزن المطلوب ({item.weight} كجم) يتجاوز وزن القسم المتاح ({secAvail.toFixed(2)} كجم)! سيتم إيقاف العملية.
+                        </div>
+                      )}
+                      {!selectedSec && isOverWeight && (
                         <span style={{ color: '#dc2626', fontWeight: 700 }}>
-                          ⚠️ الوزن المدخل ({item.weight} كجم) يتجاوز المتاح بالمخزن ({availW.toFixed(2)} كجم)!
+                          ⚠️ الوزن المدخل ({item.weight} كجم) يتجاوز المتاح بالصنف بالمخزن ({availW.toFixed(2)} كجم)!
                         </span>
                       )}
                     </div>
@@ -1415,6 +1704,7 @@ const SaleForm = ({
               background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '7px 10px',
               fontSize: '0.74rem', fontWeight: 700, color: '#9a3412'
             }}>
+              <span>اسم الصنف المرتجع *</span>
               <span>المخزون المراد الإضافة إليه</span>
               <span>الوزن (طن)</span>
               <span>اللفات</span>
@@ -1429,17 +1719,29 @@ const SaleForm = ({
                 borderBottom: idx < saleReturns.length - 1 ? '1px solid #ffedd5' : 'none',
                 background: '#fff'
               }}>
+                <input
+                  type="text"
+                  placeholder="اسم الصنف المرتجع"
+                  value={ret.product || ''}
+                  onChange={e => updateSaleReturn(idx, 'product', e.target.value)}
+                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                />
+
                 <select
                   value={ret.inventory_id}
                   onChange={e => updateSaleReturn(idx, 'inventory_id', e.target.value)}
                   style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
                 >
                   <option value="">-- اختر مخزون الإضافة --</option>
-                  {inventoryList.map(inv => (
-                    <option key={inv.id} value={inv.id}>
-                      {inv.product} (رصيد: {Number(inv.available_quantity || 0).toFixed(2)} كجم)
-                    </option>
-                  ))}
+                  {inventoryList.map((inv, invIdx) => {
+                    const w = Number(inv.total_available_weight ?? inv.available_quantity ?? inv.remaining_weight ?? 0);
+                    const companyLabel = inv.company ? ` (${inv.company})` : '';
+                    return (
+                      <option key={inv.sample_id || inv.id || invIdx} value={inv.sample_id || inv.id}>
+                        {inv.product}{companyLabel} {w > 0 ? `— رصيد حالي: ${w.toFixed(2)} كجم` : '— (إضافة وزيادة للمخزن)'}
+                      </option>
+                    );
+                  })}
                 </select>
 
                 <input
@@ -1516,29 +1818,145 @@ const SaleForm = ({
 
       {/* Payment section */}
       <div style={{ background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: 10, padding: '14px', marginBottom: 16 }}>
-        <div className="pos-grid-2-col">
-          <div>
-            <label style={labelStyle}>المبلغ المدفوع</label>
-            <input type="number" placeholder="0.00" value={saleForm.paid_amount} min="0" step="0.01"
-              onChange={e => setSaleForm(p => ({ ...p, paid_amount: e.target.value }))}
-              style={fieldStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>طريقة الدفع</label>
-            <select value={saleForm.payment_type_id}
-              onChange={e => setSaleForm(p => ({ ...p, payment_type_id: e.target.value }))}
-              style={fieldStyle}>
-              <option value="">بدون</option>
-              {paymentTypes.map(pt => <option key={pt.id} value={pt.id}>{pt.name}</option>)}
-            </select>
-          </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span style={{ fontSize: '0.88rem', fontWeight: 700, color: '#1e293b' }}>
+            💳 تفاصيل السداد وطرق الدفع
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setIsMultiPayment(prev => {
+                if (!prev && saleForm.paid_amount) {
+                  setSalePayments([{ payment_type_id: saleForm.payment_type_id || '', amount: saleForm.paid_amount, notes: '' }]);
+                }
+                return !prev;
+              });
+            }}
+            style={{
+              background: isMultiPayment ? '#eff6ff' : '#fff',
+              color: isMultiPayment ? '#2563eb' : '#475569',
+              border: `1.5px solid ${isMultiPayment ? '#93c5fd' : '#cbd5e1'}`,
+              borderRadius: 8,
+              padding: '5px 12px',
+              fontSize: '0.78rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6
+            }}
+          >
+            <CreditCard size={14} />
+            {isMultiPayment ? 'إلغاء التعدد (دفع موحد)' : '⚡ تعدد بنود الدفع (كاش + انستاباي + محافظ...)'}
+          </button>
         </div>
+
+        {!isMultiPayment ? (
+          <div className="pos-grid-2-col">
+            <div>
+              <label style={labelStyle}>المبلغ المدفوع</label>
+              <input type="number" placeholder="0.00" value={saleForm.paid_amount} min="0" step="0.01"
+                onChange={e => setSaleForm(p => ({ ...p, paid_amount: e.target.value }))}
+                style={fieldStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>طريقة الدفع</label>
+              <select value={saleForm.payment_type_id}
+                onChange={e => setSaleForm(p => ({ ...p, payment_type_id: e.target.value }))}
+                style={fieldStyle}>
+                <option value="">بدون</option>
+                {paymentTypes.map(pt => <option key={pt.id} value={pt.id}>{pt.name}</option>)}
+              </select>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+            <div style={{
+              display: 'grid', gridTemplateColumns: '2fr 1.5fr 2fr 36px', gap: 8,
+              background: '#f1f5f9', padding: '6px 10px', borderRadius: 6,
+              fontSize: '0.75rem', fontWeight: 700, color: '#475569'
+            }}>
+              <span>طريقة الدفع *</span>
+              <span>المبلغ (ج.م) *</span>
+              <span>ملاحظات / رقم الحوالة</span>
+              <span></span>
+            </div>
+
+            {salePayments.map((pRow, pIdx) => (
+              <div key={pIdx} style={{ display: 'grid', gridTemplateColumns: '2fr 1.5fr 2fr 36px', gap: 8, alignItems: 'center' }}>
+                <select
+                  value={pRow.payment_type_id}
+                  onChange={e => updateSalePayment(pIdx, 'payment_type_id', e.target.value)}
+                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                >
+                  <option value="">-- اختر طريقة الدفع --</option>
+                  {paymentTypes.map(pt => (
+                    <option key={pt.id} value={pt.id}>{pt.name}</option>
+                  ))}
+                </select>
+
+                <input
+                  type="number"
+                  placeholder="المبلغ"
+                  step="0.01"
+                  min="0"
+                  value={pRow.amount}
+                  onChange={e => updateSalePayment(pIdx, 'amount', e.target.value)}
+                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                />
+
+                <input
+                  type="text"
+                  placeholder="ملاحظات الحوالة"
+                  value={pRow.notes}
+                  onChange={e => updateSalePayment(pIdx, 'notes', e.target.value)}
+                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => removeSalePayment(pIdx)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: '#dc2626', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  }}
+                  title="حذف هذا البند"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+              <button
+                type="button"
+                onClick={addSalePayment}
+                style={{
+                  background: '#f8fafc', border: '1px dashed #0284c7', color: '#0284c7',
+                  borderRadius: 6, padding: '6px 12px', fontSize: '0.78rem', fontWeight: 700,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4
+                }}
+              >
+                <Plus size={14} /> إضافة طريقة دفع أخرى
+              </button>
+
+              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#16a34a' }}>
+                إجمالي المدفوع الموزع: <span style={{ fontSize: '0.95rem' }}>{fmt(salePaid)} ج.م</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Bank Receipt Upload for Sales */}
         {(() => {
-          const selectedPT = paymentTypes.find(p => String(p.id) === String(saleForm.payment_type_id));
-          const isBank = selectedPT?.channel === 'bank';
-          if (!isBank || salePaid <= 0) return null;
+          const hasBank = isMultiPayment
+            ? salePayments.some(p => {
+                const pt = paymentTypes.find(x => String(x.id) === String(p.payment_type_id));
+                return pt?.channel === 'bank';
+              })
+            : paymentTypes.find(p => String(p.id) === String(saleForm.payment_type_id))?.channel === 'bank';
+
+          if (!hasBank || salePaid <= 0) return null;
           return (
             <BankReceiptUploader
               value={saleForm.receipt_image}
@@ -2972,3 +3390,5 @@ const CustodyForm = ({
 };
 
 export default POSPage;
+
+

@@ -1053,6 +1053,422 @@ const getCustodyReport = async (req, res, next) => {
   }
 };
 
+/**
+ * 10. Custody Transfers Report (تقرير تحويلات العهد بين الأفراد)
+ * GET /api/reports/custody-transfers?startDate=...&endDate=...&search=...
+ */
+const getCustodyTransfersReport = async (req, res, next) => {
+  try {
+    const branch_id = resolveUserBranch(req);
+    const { startDate, endDate, search, limit = 500 } = req.query;
+
+    const whereClauses = ['ct.branch_id = $1'];
+    const params = [branch_id];
+    let pIdx = 2;
+
+    if (startDate) {
+      whereClauses.push(`ct.date >= $${pIdx}`);
+      params.push(startDate);
+      pIdx++;
+    }
+    if (endDate) {
+      whereClauses.push(`ct.date <= $${pIdx}`);
+      params.push(endDate);
+      pIdx++;
+    }
+    if (search) {
+      whereClauses.push(`(ct.from_person ILIKE $${pIdx} OR ct.to_person ILIKE $${pIdx} OR ct.receipt_number ILIKE $${pIdx} OR ct.notes ILIKE $${pIdx})`);
+      params.push(`%${search}%`);
+      pIdx++;
+    }
+
+    const whereStr = whereClauses.join(' AND ');
+
+    // 1. Summary statistics
+    const sumRes = await pool.query(`
+      SELECT 
+        COUNT(ct.id) AS transfers_count,
+        COALESCE(SUM(ct.amount), 0) AS total_amount,
+        COALESCE(AVG(ct.amount), 0) AS avg_transfer
+      FROM custody_transfers ct
+      WHERE ${whereStr}
+    `, params);
+
+    // 2. Top sender (person who transferred the most)
+    const topSenderRes = await pool.query(`
+      SELECT from_person, COALESCE(SUM(amount), 0) AS total, COUNT(id) AS count
+      FROM custody_transfers ct
+      WHERE ${whereStr}
+      GROUP BY from_person
+      ORDER BY total DESC
+      LIMIT 1
+    `, params);
+
+    // 3. Top receiver (person who received the most)
+    const topReceiverRes = await pool.query(`
+      SELECT to_person, COALESCE(SUM(amount), 0) AS total, COUNT(id) AS count
+      FROM custody_transfers ct
+      WHERE ${whereStr}
+      GROUP BY to_person
+      ORDER BY total DESC
+      LIMIT 1
+    `, params);
+
+    // 4. Detailed transfers list
+    const listRes = await pool.query(`
+      SELECT 
+        ct.id,
+        ct.date,
+        ct.receipt_number,
+        ct.from_person,
+        ct.to_person,
+        ct.amount,
+        ct.notes,
+        ct.created_at
+      FROM custody_transfers ct
+      WHERE ${whereStr}
+      ORDER BY ct.date DESC, ct.id DESC
+      LIMIT $${pIdx}
+    `, [...params, parseInt(limit, 10)]);
+
+    // 5. Monthly breakdown for chart
+    const monthlyRes = await pool.query(`
+      SELECT 
+        TO_CHAR(ct.date, 'YYYY-MM') AS month,
+        COUNT(ct.id) AS count,
+        COALESCE(SUM(ct.amount), 0) AS total_amount
+      FROM custody_transfers ct
+      WHERE ${whereStr}
+      GROUP BY TO_CHAR(ct.date, 'YYYY-MM')
+      ORDER BY month ASC
+    `, params);
+
+    // 6. Top senders list (up to 6)
+    const sendersRes = await pool.query(`
+      SELECT from_person AS name, COALESCE(SUM(amount), 0) AS total, COUNT(id) AS count
+      FROM custody_transfers ct
+      WHERE ${whereStr}
+      GROUP BY from_person
+      ORDER BY total DESC
+      LIMIT 6
+    `, params);
+
+    // 7. Top receivers list (up to 6)
+    const receiversRes = await pool.query(`
+      SELECT to_person AS name, COALESCE(SUM(amount), 0) AS total, COUNT(id) AS count
+      FROM custody_transfers ct
+      WHERE ${whereStr}
+      GROUP BY to_person
+      ORDER BY total DESC
+      LIMIT 6
+    `, params);
+
+    return sendSuccess(res, {
+      summary: {
+        transfers_count: parseInt(sumRes.rows[0]?.transfers_count || 0, 10),
+        total_amount: parseFloat(sumRes.rows[0]?.total_amount || 0),
+        avg_transfer: parseFloat(sumRes.rows[0]?.avg_transfer || 0),
+        top_sender: topSenderRes.rows[0] ? {
+          from_person: topSenderRes.rows[0].from_person,
+          total: parseFloat(topSenderRes.rows[0].total || 0),
+          count: parseInt(topSenderRes.rows[0].count || 0, 10)
+        } : null,
+        top_receiver: topReceiverRes.rows[0] ? {
+          to_person: topReceiverRes.rows[0].to_person,
+          total: parseFloat(topReceiverRes.rows[0].total || 0),
+          count: parseInt(topReceiverRes.rows[0].count || 0, 10)
+        } : null,
+      },
+      transfers: listRes.rows,
+      monthlyBreakdown: monthlyRes.rows,
+      topSenders: sendersRes.rows,
+      topReceivers: receiversRes.rows
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * 11. Branch-to-Branch Transfers Report
+ * GET /api/reports/branch-transfers?startDate=...&endDate=...&type=...&status=...&direction=...&search=...
+ */
+const getBranchTransfersReport = async (req, res, next) => {
+  try {
+    const branch_id = resolveUserBranch(req);
+    const { startDate, endDate, type, status, direction = 'all', search, limit = 500 } = req.query;
+
+    const whereClauses = [];
+    const params = [];
+    let pIdx = 1;
+
+    // Filter by branch
+    if (branch_id) {
+      if (direction === 'outgoing') {
+        whereClauses.push(`t.from_branch_id = $${pIdx}`);
+        params.push(branch_id);
+        pIdx++;
+      } else if (direction === 'incoming') {
+        whereClauses.push(`t.to_branch_id = $${pIdx}`);
+        params.push(branch_id);
+        pIdx++;
+      } else {
+        whereClauses.push(`(t.from_branch_id = $${pIdx} OR t.to_branch_id = $${pIdx})`);
+        params.push(branch_id);
+        pIdx++;
+      }
+    }
+
+    if (startDate) {
+      whereClauses.push(`t.created_at::date >= $${pIdx}`);
+      params.push(startDate);
+      pIdx++;
+    }
+
+    if (endDate) {
+      whereClauses.push(`t.created_at::date <= $${pIdx}`);
+      params.push(endDate);
+      pIdx++;
+    }
+
+    if (type && type !== 'all') {
+      whereClauses.push(`t.type = $${pIdx}`);
+      params.push(type);
+      pIdx++;
+    }
+
+    if (status && status !== 'all') {
+      whereClauses.push(`t.status = $${pIdx}`);
+      params.push(status);
+      pIdx++;
+    }
+
+    if (search && search.trim()) {
+      whereClauses.push(`(
+        t.transfer_number ILIKE $${pIdx} OR
+        fb.name ILIKE $${pIdx} OR
+        tb.name ILIKE $${pIdx} OR
+        t.notes ILIKE $${pIdx}
+      )`);
+      params.push(`%${search.trim()}%`);
+      pIdx++;
+    }
+
+    const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    // 1. Summary KPIs
+    const branchConditionOutgoing = branch_id ? `t.from_branch_id = ${branch_id} AND` : '';
+    const branchConditionIncoming = branch_id ? `t.to_branch_id = ${branch_id} AND` : '';
+
+    const sumRes = await pool.query(`
+      SELECT 
+        COUNT(t.id) AS transfers_count,
+        COUNT(CASE WHEN t.type = 'monetary' THEN 1 END) AS monetary_transfers_count,
+        COUNT(CASE WHEN t.type = 'inventory' THEN 1 END) AS inventory_transfers_count,
+        COALESCE(SUM(CASE WHEN t.type = 'monetary' AND ${branchConditionOutgoing} t.status = 'completed' THEN t.amount ELSE 0 END), 0) AS total_monetary_outgoing,
+        COALESCE(SUM(CASE WHEN t.type = 'monetary' AND ${branchConditionIncoming} t.status = 'completed' THEN t.amount ELSE 0 END), 0) AS total_monetary_incoming,
+        COUNT(CASE WHEN t.status = 'pending' THEN 1 END) AS total_pending,
+        COUNT(CASE WHEN t.status = 'completed' THEN 1 END) AS total_completed,
+        COUNT(CASE WHEN t.status = 'rejected' THEN 1 END) AS total_rejected,
+        COUNT(CASE WHEN t.status = 'cancelled' THEN 1 END) AS total_cancelled
+      FROM transfers t
+      JOIN branches fb ON fb.id = t.from_branch_id
+      JOIN branches tb ON tb.id = t.to_branch_id
+      ${whereStr}
+    `, params);
+
+    // 2. Transfers list
+    const listRes = await pool.query(`
+      SELECT 
+        t.id,
+        t.transfer_number,
+        t.from_branch_id,
+        fb.name AS from_branch_name,
+        t.to_branch_id,
+        tb.name AS to_branch_name,
+        t.type,
+        t.status,
+        t.amount,
+        t.channel,
+        t.notes,
+        t.rejection_reason,
+        t.created_at,
+        t.completed_at,
+        u_cr.full_name AS created_by_name,
+        u_rc.full_name AS received_by_name,
+        (
+          SELECT json_agg(
+            json_build_object(
+              'id', ti.id,
+              'product', ti.product,
+              'company', ti.company,
+              'weight', ti.weight,
+              'rolls_count', ti.rolls_count,
+              'notes', ti.notes
+            )
+          )
+          FROM transfer_items ti
+          WHERE ti.transfer_id = t.id
+        ) AS items
+      FROM transfers t
+      JOIN branches fb ON fb.id = t.from_branch_id
+      JOIN branches tb ON tb.id = t.to_branch_id
+      LEFT JOIN users u_cr ON u_cr.id = t.created_by_user_id
+      LEFT JOIN users u_rc ON u_rc.id = t.received_by_user_id
+      ${whereStr}
+      ORDER BY t.created_at DESC, t.id DESC
+      LIMIT $${pIdx}
+    `, [...params, parseInt(limit, 10)]);
+
+    // 3. Monthly Breakdown for charts
+    const monthlyRes = await pool.query(`
+      SELECT 
+        TO_CHAR(t.created_at, 'YYYY-MM') AS month,
+        COUNT(t.id) AS count,
+        COALESCE(SUM(CASE WHEN t.type = 'monetary' AND t.status = 'completed' THEN t.amount ELSE 0 END), 0) AS total_monetary,
+        COUNT(CASE WHEN t.type = 'monetary' THEN 1 END) AS monetary_count,
+        COUNT(CASE WHEN t.type = 'inventory' THEN 1 END) AS inventory_count
+      FROM transfers t
+      JOIN branches fb ON fb.id = t.from_branch_id
+      JOIN branches tb ON tb.id = t.to_branch_id
+      ${whereStr}
+      GROUP BY TO_CHAR(t.created_at, 'YYYY-MM')
+      ORDER BY month ASC
+    `, params);
+
+    // 4. By Channel breakdown
+    const channelRes = await pool.query(`
+      SELECT 
+        COALESCE(t.channel, 'cash') AS channel,
+        COUNT(t.id) AS count,
+        COALESCE(SUM(t.amount), 0) AS total_amount
+      FROM transfers t
+      JOIN branches fb ON fb.id = t.from_branch_id
+      JOIN branches tb ON tb.id = t.to_branch_id
+      ${whereStr ? `${whereStr} AND t.type = 'monetary'` : `WHERE t.type = 'monetary'`}
+      GROUP BY COALESCE(t.channel, 'cash')
+      ORDER BY total_amount DESC
+    `, params);
+
+    // 5. Counterparty branch breakdown
+    const counterpartyBranchExpr = branch_id 
+      ? `CASE WHEN t.from_branch_id = ${branch_id} THEN tb.name ELSE fb.name END`
+      : `fb.name || ' ➔ ' || tb.name`;
+
+    const branchBreakdownRes = await pool.query(`
+      SELECT 
+        ${counterpartyBranchExpr} AS branch_name,
+        COUNT(t.id) AS count,
+        COALESCE(SUM(CASE WHEN t.type = 'monetary' THEN t.amount ELSE 0 END), 0) AS total_monetary
+      FROM transfers t
+      JOIN branches fb ON fb.id = t.from_branch_id
+      JOIN branches tb ON tb.id = t.to_branch_id
+      ${whereStr}
+      GROUP BY ${counterpartyBranchExpr}
+      ORDER BY count DESC
+      LIMIT 6
+    `, params);
+
+    return sendSuccess(res, {
+      summary: {
+        transfers_count: parseInt(sumRes.rows[0]?.transfers_count || 0, 10),
+        monetary_transfers_count: parseInt(sumRes.rows[0]?.monetary_transfers_count || 0, 10),
+        inventory_transfers_count: parseInt(sumRes.rows[0]?.inventory_transfers_count || 0, 10),
+        total_monetary_outgoing: parseFloat(sumRes.rows[0]?.total_monetary_outgoing || 0),
+        total_monetary_incoming: parseFloat(sumRes.rows[0]?.total_monetary_incoming || 0),
+        total_pending: parseInt(sumRes.rows[0]?.total_pending || 0, 10),
+        total_completed: parseInt(sumRes.rows[0]?.total_completed || 0, 10),
+        total_rejected: parseInt(sumRes.rows[0]?.total_rejected || 0, 10),
+        total_cancelled: parseInt(sumRes.rows[0]?.total_cancelled || 0, 10),
+      },
+      transfers: listRes.rows,
+      monthlyBreakdown: monthlyRes.rows,
+      byChannel: channelRes.rows,
+      byBranch: branchBreakdownRes.rows
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── 12. Jard Report (تقرير الجرد المستقل وحركات الوارد والصادر) ─────────────
+const getJardReport = async (req, res, next) => {
+  try {
+    const branch_id = getEffectiveBranchId(req);
+    const { startDate, endDate, company, section_id } = req.query;
+
+    let where = `WHERE j.branch_id = $1`;
+    const params = [branch_id];
+    let pIdx = 2;
+
+    if (startDate) {
+      where += ` AND j.date >= $${pIdx++}`;
+      params.push(startDate);
+    }
+    if (endDate) {
+      where += ` AND j.date <= $${pIdx++}`;
+      params.push(endDate);
+    }
+    if (company && company !== 'all') {
+      where += ` AND LOWER(TRIM(j.company)) = LOWER(TRIM($${pIdx++}))`;
+      params.push(company);
+    }
+    if (section_id && section_id !== 'all') {
+      where += ` AND j.section_id = $${pIdx++}`;
+      params.push(Number(section_id));
+    }
+
+    const summaryRes = await pool.query(`
+      SELECT
+        COUNT(*) AS total_items,
+        COALESCE(SUM(j.opening_rolls), 0) AS total_opening_rolls,
+        COALESCE(SUM(j.opening_weight), 0) AS total_opening_weight,
+        COALESCE(SUM(j.incoming_rolls), 0) AS total_incoming_rolls,
+        COALESCE(SUM(j.incoming_weight), 0) AS total_incoming_weight,
+        COALESCE(SUM(j.outgoing_rolls), 0) AS total_outgoing_rolls,
+        COALESCE(SUM(j.outgoing_weight), 0) AS total_outgoing_weight,
+        COALESCE(SUM(j.available_rolls), 0) AS total_available_rolls,
+        COALESCE(SUM(j.available_weight), 0) AS total_available_weight,
+        COUNT(CASE WHEN j.available_rolls > 0 THEN 1 END) AS in_stock_count,
+        COUNT(CASE WHEN j.available_rolls <= 0 THEN 1 END) AS out_of_stock_count
+      FROM jard j
+      ${where}
+    `, params);
+
+    const listRes = await pool.query(`
+      SELECT
+        j.*,
+        sec.name AS section_name,
+        (SELECT COUNT(*) FROM jard_movements jm WHERE jm.jard_id = j.id) AS movements_count
+      FROM jard j
+      LEFT JOIN inventory_sections sec ON sec.id = j.section_id
+      ${where}
+      ORDER BY j.company ASC, j.product ASC
+    `, params);
+
+    const s = summaryRes.rows[0];
+
+    return sendSuccess(res, {
+      summary: {
+        total_items: parseInt(s?.total_items || 0, 10),
+        total_opening_rolls: parseInt(s?.total_opening_rolls || 0, 10),
+        total_opening_weight: parseFloat(s?.total_opening_weight || 0),
+        total_incoming_rolls: parseInt(s?.total_incoming_rolls || 0, 10),
+        total_incoming_weight: parseFloat(s?.total_incoming_weight || 0),
+        total_outgoing_rolls: parseInt(s?.total_outgoing_rolls || 0, 10),
+        total_outgoing_weight: parseFloat(s?.total_outgoing_weight || 0),
+        total_available_rolls: parseInt(s?.total_available_rolls || 0, 10),
+        total_available_weight: parseFloat(s?.total_available_weight || 0),
+        in_stock_count: parseInt(s?.in_stock_count || 0, 10),
+        out_of_stock_count: parseInt(s?.out_of_stock_count || 0, 10),
+      },
+      items: listRes.rows
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getComprehensiveReport,
   getSalesReport,
@@ -1062,5 +1478,8 @@ module.exports = {
   getExpensesReport,
   getCustomersReport,
   getColoringReport,
-  getCustodyReport
+  getCustodyReport,
+  getCustodyTransfersReport,
+  getBranchTransfersReport,
+  getJardReport
 };

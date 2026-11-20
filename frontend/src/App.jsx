@@ -24,6 +24,8 @@ import TransfersPage from './pages/branch/TransfersPage';
 import ReturnsPage from './pages/branch/ReturnsPage';
 import ColoringPage from './pages/branch/ColoringPage';
 import CustodyPage from './pages/branch/CustodyPage';
+import StocktakingPage from './pages/branch/StocktakingPage';
+import JardPage from './pages/branch/JardPage';
 import './index.css';
 
 function App() {
@@ -93,6 +95,8 @@ function App() {
             <Route path="pos" element={<POSPage />} />
             <Route path="reports" element={<ReportsPage />} />
             <Route path="transfers" element={<TransfersPage />} />
+            <Route path="jard" element={<JardPage />} />
+            <Route path="stocktaking" element={<StocktakingPage />} />
           </Route>
 
 

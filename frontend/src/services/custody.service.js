@@ -11,6 +11,7 @@ export const custodyService = {
   deletePerson: (personName) => api.delete(`/custody/persons/${encodeURIComponent(personName)}`).then((res) => res.data),
   addDeduction: (data) => api.post('/custody/deduction', data).then((res) => res.data),
   addCustodyTransfer: (data) => api.post('/custody/transfer', data).then((res) => res.data),
+  updateCustodyTransfer: (id, data) => api.put(`/custody/transfers/${id}`, data).then((res) => res.data),
   getCustodyTransfers: (params) => api.get('/custody/transfers', { params }).then((res) => res.data),
   deleteCustodyTransfer: (id) => api.delete(`/custody/transfers/${id}`).then((res) => res.data),
 };

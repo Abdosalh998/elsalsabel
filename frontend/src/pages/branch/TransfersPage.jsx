@@ -94,6 +94,16 @@ const TransfersPage = () => {
   const [isPrintOpen, setIsPrintOpen] = useState(false);
   const [transferToPrint, setTransferToPrint] = useState(null);
 
+  // Full Balance Transfer State
+  const [isFullTransferOpen, setIsFullTransferOpen] = useState(false);
+  const [fullTransferData, setFullTransferData] = useState({
+    to_branch_id: '',
+    notes: 'تحويل كامل رصيد الخزينة',
+    selectedChannels: { cash: true, wallet: true, instapay: true, bank: true },
+    channelAmounts: { cash: 0, wallet: 0, instapay: 0, bank: 0 }
+  });
+  const [isSubmittingFullTransfer, setIsSubmittingFullTransfer] = useState(false);
+
   // Create Form State
   const [formData, setFormData] = useState({
     to_branch_id: '',
@@ -160,6 +170,111 @@ const TransfersPage = () => {
       items: []
     });
     setIsCreateOpen(true);
+  };
+
+  const handleOpenFullTransferModal = async () => {
+    try {
+      await fetchCreateFormData();
+    } catch (e) {
+      // ignore
+    }
+    const cCash = Math.max(0, Number(treasuryChannels.cash || 0));
+    const cWallet = Math.max(0, Number(treasuryChannels.wallet || 0));
+    const cInstapay = Math.max(0, Number(treasuryChannels.instapay || 0));
+    const cBank = Math.max(0, Number(treasuryChannels.bank || 0));
+
+    const totalAvail = cCash + cWallet + cInstapay + cBank;
+    if (totalAvail <= 0) {
+      return toast.error('لا يوجد رصيد إيجابي متاح في الخزينة حالياً لإجراء التحويل الكامل');
+    }
+
+    setFullTransferData({
+      to_branch_id: '',
+      notes: 'تحويل كامل رصيد الخزينة',
+      selectedChannels: {
+        cash: cCash > 0,
+        wallet: cWallet > 0,
+        instapay: cInstapay > 0,
+        bank: cBank > 0
+      },
+      channelAmounts: {
+        cash: cCash,
+        wallet: cWallet,
+        instapay: cInstapay,
+        bank: cBank
+      }
+    });
+    setIsFullTransferOpen(true);
+  };
+
+  const handleFullTransferSubmit = async (e) => {
+    e.preventDefault();
+    if (!fullTransferData.to_branch_id) {
+      return toast.error('يرجى تحديد الفرع المستلم للتحويل');
+    }
+
+    const channelsToTransfer = ['cash', 'wallet', 'instapay', 'bank'].filter(ch => {
+      return fullTransferData.selectedChannels[ch] && Number(fullTransferData.channelAmounts[ch]) > 0;
+    });
+
+    if (channelsToTransfer.length === 0) {
+      return toast.error('يرجى تحديد قناة واحدة على الأقل بها رصيد أكبر من الصفر');
+    }
+
+    for (const ch of channelsToTransfer) {
+      const reqAmount = Number(fullTransferData.channelAmounts[ch]);
+      const availAmount = Number(treasuryChannels[ch] || 0);
+      if (reqAmount > availAmount) {
+        const chName = ch === 'cash' ? 'نقدي' : ch === 'wallet' ? 'محفظة' : ch === 'instapay' ? 'انستاباي' : 'إيداع بنكي';
+        return toast.error(`المبلغ المطلوب تحويله في (${chName}) يتجاوز الرصيد المتاح (${fmt(availAmount)} ج.م)`);
+      }
+    }
+
+    setIsSubmittingFullTransfer(true);
+    let successCount = 0;
+    let totalTransferred = 0;
+    let lastTransferId = null;
+
+    try {
+      for (const ch of channelsToTransfer) {
+        const amt = Number(fullTransferData.channelAmounts[ch]);
+        const chName = ch === 'cash' ? 'نقدي' : ch === 'wallet' ? 'محفظة' : ch === 'instapay' ? 'انستاباي' : 'إيداع بنكي';
+        const res = await transfersService.createTransfer({
+          to_branch_id: fullTransferData.to_branch_id,
+          type: 'monetary',
+          channel: ch,
+          amount: amt,
+          notes: `${fullTransferData.notes || 'تحويل كامل الرصيد'} - (${chName})`
+        });
+        successCount++;
+        totalTransferred += amt;
+        if (res?.data?.id) {
+          lastTransferId = res.data.id;
+        }
+      }
+
+      toast.success(`تم بنجاح إنشاء ${successCount} أذونات تحويل مالي بإجمالي ${fmt(totalTransferred)} ج.م`);
+      setIsFullTransferOpen(false);
+      fetchTransfers();
+      fetchCreateFormData();
+
+      if (lastTransferId) {
+        try {
+          const fullRes = await transfersService.getTransferById(lastTransferId);
+          setTransferToPrint(fullRes.data);
+          setIsPrintOpen(true);
+        } catch (e) {
+          // voucher print optional
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'حدث خطأ أثناء تنفيذ التحويل الكامل');
+      fetchTransfers();
+      fetchCreateFormData();
+    } finally {
+      setIsSubmittingFullTransfer(false);
+    }
   };
 
   // Add Item to Inventory Transfer
@@ -407,6 +522,24 @@ const TransfersPage = () => {
           <p>تحويلات نقدية ومخزنية بين فروع الشركة مع إصدار أذونات التحويل الرسمية المعتمدة</p>
         </div>
         <div className="transfers-header-actions">
+          <button
+            type="button"
+            className="btn btn-warning"
+            onClick={handleOpenFullTransferModal}
+            style={{
+              background: 'linear-gradient(135deg, #d97706, #b45309)',
+              color: '#fff',
+              border: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 7,
+              fontWeight: 800,
+              boxShadow: '0 2px 8px rgba(217, 119, 6, 0.25)'
+            }}
+          >
+            <Wallet size={18} />
+            نقل كامل الرصيد
+          </button>
           <button className="btn btn-primary" onClick={handleOpenCreateModal}>
             <Plus size={18} />
             إنشاء تحويل جديد
@@ -777,6 +910,226 @@ const TransfersPage = () => {
           </div>
         )}
       </div>
+
+      {/* ─── Full Balance Transfer Modal ─────────────────────────── */}
+      {isFullTransferOpen && (
+        <div className="modal-transfers-lg-overlay" onClick={() => setIsFullTransferOpen(false)}>
+          <div className="modal-transfers-lg-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
+            <div className="modal-transfers-lg-header" style={{ borderBottomColor: '#fef3c7', background: 'linear-gradient(135deg, #fffbeb, #fef3c7)' }}>
+              <h3 style={{ color: '#b45309' }}>
+                <Wallet size={22} color="#b45309" />
+                نقل كامل رصيد الخزينة (متعدد القنوات)
+              </h3>
+              <button className="modal-transfers-lg-close" onClick={() => setIsFullTransferOpen(false)}>
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleFullTransferSubmit} style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+              <div className="modal-transfers-lg-body">
+                {/* Info Notice */}
+                <div style={{
+                  padding: '12px 16px', borderRadius: 10, background: '#eff6ff',
+                  border: '1.5px solid #bfdbfe', marginBottom: 18, fontSize: '0.84rem', color: '#1e40af'
+                }}>
+                  <div style={{ fontWeight: 800, marginBottom: 4 }}>💡 نظام النقل السريع لكامل السيولة:</div>
+                  سيتم إنشاء إذن تحويل رسمي لكل قناة مالية محددة بالمبلغ المطلوب وتوجيهها للفرع المختار، ليتم تأكيد استلامها فور وصولها.
+                </div>
+
+                {/* Destination Branch */}
+                <div className="form-group" style={{ marginBottom: '18px' }}>
+                  <label className="form-label" style={{ fontWeight: '700', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Building2 size={16} color="var(--primary)" />
+                    الفرع المحول إليه (المستلم) <span style={{ color: 'var(--danger)' }}>*</span>
+                  </label>
+                  <select
+                    className="form-select"
+                    value={fullTransferData.to_branch_id}
+                    onChange={(e) => setFullTransferData(prev => ({ ...prev, to_branch_id: e.target.value }))}
+                    required
+                  >
+                    <option value="">-- اختر الفرع المستلم من القائمة --</option>
+                    {availableBranches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} ({b.code || 'فرع'}) {b.address ? `— ${b.address}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Channel balances & selection */}
+                <div style={{ marginBottom: 18 }}>
+                  <label className="form-label" style={{ fontWeight: '700', marginBottom: '8px', display: 'block' }}>
+                    القنوات المالية وأرصدتها المتاحة للنقل:
+                  </label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {[
+                      { key: 'cash', label: 'كاش (نقدي بالدرج)', icon: Banknote, color: '#16a34a', bg: '#f0fdf4' },
+                      { key: 'wallet', label: 'محفظة إلكترونية (فودافون كاش...)', icon: Wallet, color: '#d97706', bg: '#fffbeb' },
+                      { key: 'instapay', label: 'انستاباي (InstaPay)', icon: Smartphone, color: '#2563eb', bg: '#eff6ff' },
+                      { key: 'bank', label: 'إيداع بنكي مباشر', icon: Landmark, color: '#7c3aed', bg: '#f5f3ff' },
+                    ].map(ch => {
+                      const avail = Number(treasuryChannels[ch.key] || 0);
+                      const isSelected = !!fullTransferData.selectedChannels[ch.key];
+                      const Icon = ch.icon;
+                      return (
+                        <div
+                          key={ch.key}
+                          style={{
+                            padding: '12px 14px', borderRadius: 10,
+                            border: `1.5px solid ${isSelected ? ch.color : '#e2e8f0'}`,
+                            background: isSelected ? ch.bg : '#f8fafc',
+                            display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12
+                          }}
+                        >
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', flex: 1, minWidth: 200 }}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              disabled={avail <= 0}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setFullTransferData(prev => ({
+                                  ...prev,
+                                  selectedChannels: { ...prev.selectedChannels, [ch.key]: checked },
+                                  channelAmounts: {
+                                    ...prev.channelAmounts,
+                                    [ch.key]: checked ? Math.max(0, avail) : 0
+                                  }
+                                }));
+                              }}
+                              style={{ width: 18, height: 18, accentColor: ch.color, cursor: 'pointer' }}
+                            />
+                            <div style={{
+                              width: 34, height: 34, borderRadius: 8, background: '#fff',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+                            }}>
+                              <Icon size={18} color={ch.color} />
+                            </div>
+                            <div>
+                              <div style={{ fontWeight: 800, fontSize: '0.88rem', color: '#1e293b' }}>{ch.label}</div>
+                              <div style={{ fontSize: '0.75rem', color: avail > 0 ? '#16a34a' : '#94a3b8', fontWeight: 600 }}>
+                                المتاح بالخزينة: {fmt(avail)} ج.م
+                              </div>
+                            </div>
+                          </label>
+
+                          {isSelected && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max={avail}
+                                className="form-input"
+                                value={fullTransferData.channelAmounts[ch.key]}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setFullTransferData(prev => ({
+                                    ...prev,
+                                    channelAmounts: { ...prev.channelAmounts, [ch.key]: val }
+                                  }));
+                                }}
+                                style={{ width: 130, fontWeight: 800, color: ch.color, textAlign: 'left', direction: 'ltr' }}
+                                placeholder="0.00"
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-outline"
+                                style={{ padding: '6px 10px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                                onClick={() => {
+                                  setFullTransferData(prev => ({
+                                    ...prev,
+                                    channelAmounts: { ...prev.channelAmounts, [ch.key]: Math.max(0, avail) }
+                                  }));
+                                }}
+                              >
+                                كامل الرصيد
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Total Summary */}
+                {(() => {
+                  const total = ['cash', 'wallet', 'instapay', 'bank'].reduce((s, k) => {
+                    return s + (fullTransferData.selectedChannels[k] ? Number(fullTransferData.channelAmounts[k] || 0) : 0);
+                  }, 0);
+                  const count = ['cash', 'wallet', 'instapay', 'bank'].filter(k => fullTransferData.selectedChannels[k] && Number(fullTransferData.channelAmounts[k] || 0) > 0).length;
+
+                  return (
+                    <div style={{
+                      padding: '14px 18px', borderRadius: 12, background: 'linear-gradient(135deg, #1e293b, #0f172a)',
+                      color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18
+                    }}>
+                      <div>
+                        <div style={{ fontSize: '0.78rem', color: '#94a3b8' }}>إجمالي السيولة المطلوب نقلها ({count} قنوات):</div>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#38bdf8' }}>{fmt(total)} ج.م</div>
+                      </div>
+                      <div style={{ textAlign: 'left' }}>
+                        <span style={{
+                          padding: '4px 10px', borderRadius: 20, fontSize: '0.75rem',
+                          background: count > 0 ? '#10b981' : '#64748b', color: '#fff', fontWeight: 700
+                        }}>
+                          {count > 0 ? 'جاهز للتنفيذ' : 'لم يتم اختيار مبالغ'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Notes */}
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontWeight: '700', marginBottom: '6px' }}>
+                    بيان التحويل وملاحظات إضافية
+                  </label>
+                  <textarea
+                    rows={2}
+                    className="form-textarea"
+                    placeholder="ملاحظات توضيحية لسبب نقل الرصيد (مثال: تصفية وردية / توريد للخزينة الرئيسية)"
+                    value={fullTransferData.notes}
+                    onChange={(e) => setFullTransferData(prev => ({ ...prev, notes: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="modal-transfers-lg-footer">
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setIsFullTransferOpen(false)}
+                  disabled={isSubmittingFullTransfer}
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ background: 'linear-gradient(135deg, #d97706, #b45309)', border: 'none' }}
+                  disabled={isSubmittingFullTransfer}
+                >
+                  {isSubmittingFullTransfer ? (
+                    <>
+                      <RefreshCw size={16} className="spin" />
+                      جاري إنشاء التحويلات...
+                    </>
+                  ) : (
+                    <>
+                      <Wallet size={16} />
+                      تأكيد نقل كامل الرصيد
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* ─── Create Transfer Modal ─────────────────────────── */}
       {isCreateOpen && (

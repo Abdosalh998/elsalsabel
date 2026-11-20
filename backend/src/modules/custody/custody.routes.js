@@ -11,6 +11,7 @@ const {
   deletePersonCustodies,
   addDeduction,
   addCustodyTransfer,
+  updateCustodyTransfer,
   getCustodyTransfers,
   deleteCustodyTransfer,
 } = require('./custody.controller');
@@ -26,6 +27,7 @@ router.delete('/persons/:personName', deletePersonCustodies);
 router.post('/deduction', addDeduction);
 router.get('/transfers', getCustodyTransfers);
 router.post('/transfer', addCustodyTransfer);
+router.put('/transfers/:id', updateCustodyTransfer);
 router.delete('/transfers/:id', deleteCustodyTransfer);
 
 router.get('/', getCustodies);

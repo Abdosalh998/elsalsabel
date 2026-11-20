@@ -44,6 +44,21 @@ export const reportsService = {
   getCustodyReport: async (params) => {
     const { data } = await api.get('/reports/custody', { params });
     return data;
+  },
+
+  getCustodyTransfersReport: async (params) => {
+    const { data } = await api.get('/reports/custody-transfers', { params });
+    return data;
+  },
+
+  getBranchTransfersReport: async (params) => {
+    const { data } = await api.get('/reports/branch-transfers', { params });
+    return data;
+  },
+
+  getJardReport: async (params) => {
+    const { data } = await api.get('/reports/jard', { params });
+    return data;
   }
 };
 

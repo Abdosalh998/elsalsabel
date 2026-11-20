@@ -42,6 +42,7 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
   const creditUsed = Number(sale.customer_credit || 0);
   const cashPaid = Number(sale.cash_paid || 0);
   const paymentTypeName = sale.payment_type_name || null;
+  const payments = sale.payments || [];
   const unpaidInvoices = sale.previous_unpaid_invoices || [];
   const overpaidAddedToCredit = (cashPaid > 0 && (cashPaid + creditUsed) > currentTotal)
     ? (cashPaid + creditUsed) - currentTotal
@@ -350,15 +351,35 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
                     </div>
                   )}
 
-                  {cashPaid > 0 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, fontSize: '0.85rem' }}>
-                      <span style={{ color: '#16a34a', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-                        💵 المدفوع نقداً
-                        {paymentTypeName && <PaymentBadge name={paymentTypeName} />}
-                        :
-                      </span>
-                      <strong style={{ color: '#16a34a' }}>{cashPaid.toFixed(2)} ج.م</strong>
+                  {payments.length > 1 ? (
+                    <div style={{ background: '#f0fdf4', border: '1px dashed #86efac', borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 800, color: '#166534', marginBottom: 4 }}>
+                        💳 تفاصيل طرق الدفع المسددة ({payments.length} بنود):
+                      </div>
+                      {payments.map((p, pIdx) => (
+                        <div key={pIdx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', padding: '2px 0' }}>
+                          <span style={{ color: '#14532d', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            • {p.payment_type_name || p.name || 'طريقة دفع'}
+                          </span>
+                          <strong style={{ color: '#16a34a' }}>{Number(p.amount || 0).toFixed(2)} ج.م</strong>
+                        </div>
+                      ))}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #bbf7d0', marginTop: 4, paddingTop: 4, fontWeight: 800, fontSize: '0.85rem' }}>
+                        <span style={{ color: '#166534' }}>إجمالي المسدد نقداً:</span>
+                        <strong style={{ color: '#16a34a' }}>{cashPaid.toFixed(2)} ج.م</strong>
+                      </div>
                     </div>
+                  ) : (
+                    cashPaid > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, fontSize: '0.85rem' }}>
+                        <span style={{ color: '#16a34a', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                          💵 المدفوع نقداً
+                          {paymentTypeName && <PaymentBadge name={paymentTypeName} />}
+                          :
+                        </span>
+                        <strong style={{ color: '#16a34a' }}>{cashPaid.toFixed(2)} ج.م</strong>
+                      </div>
+                    )
                   )}
 
                   {paidAmount > 0 && cashPaid === 0 && creditUsed === 0 && (
@@ -368,7 +389,7 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
                     </div>
                   )}
 
-                  {paymentTypeName && cashPaid === 0 && (
+                  {paymentTypeName && cashPaid === 0 && payments.length <= 1 && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, fontSize: '0.85rem' }}>
                       <span style={{ color: '#475569' }}>طريقة الدفع:</span>
                       <PaymentBadge name={paymentTypeName} />
@@ -475,9 +496,50 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
                 </table>
               </div>
 
+              {/* Returns in 80mm if any */}
+              {returns.length > 0 && (
+                <div style={{ borderBottom: '1px dashed #000', paddingBottom: 6, marginBottom: 6 }}>
+                  <div style={{ fontSize: '0.74rem', fontWeight: 800, textAlign: 'center', marginBottom: 3, color: '#000' }}>
+                    --- مرتجع بضاعة مخصوم من الفاتورة ---
+                  </div>
+                  <table style={{ width: '100%', fontSize: '0.72rem', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px dashed #000' }}>
+                        <th style={{ textAlign: 'right', paddingBottom: 2 }}>الصنف المرتجع</th>
+                        <th style={{ textAlign: 'center', paddingBottom: 2 }}>الوزن</th>
+                        <th style={{ textAlign: 'center', paddingBottom: 2 }}>السعر</th>
+                        <th style={{ textAlign: 'left', paddingBottom: 2 }}>الإجمالي</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {returns.map((ret, rIdx) => (
+                        <tr key={rIdx}>
+                          <td style={{ padding: '2px 0' }}>{ret.product}</td>
+                          <td style={{ textAlign: 'center' }}>{Number(ret.weight).toFixed(2)}</td>
+                          <td style={{ textAlign: 'center' }}>{Number(ret.price_per_ton).toFixed(1)}</td>
+                          <td style={{ textAlign: 'left', fontWeight: 700 }}>- {Number(ret.total).toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
               <div style={{ borderBottom: '1px dashed #000', paddingBottom: 8, marginBottom: 8, fontSize: '0.85rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                  <span>الإجمالي:</span>
+                {returnsTotal > 0 && (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2, fontSize: '0.8rem' }}>
+                      <span>إجمالي المبيعات:</span>
+                      <span>{grossTotal.toFixed(2)} ج.م</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2, fontSize: '0.8rem' }}>
+                      <span>خصم المرتجع:</span>
+                      <span>- {returnsTotal.toFixed(2)} ج.م</span>
+                    </div>
+                  </>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontWeight: returnsTotal > 0 ? 800 : 700 }}>
+                  <span>{returnsTotal > 0 ? 'الصافي بعد المرتجع:' : 'الإجمالي:'}</span>
                   <strong>{currentTotal.toFixed(2)} ج.م</strong>
                 </div>
                 {creditUsed > 0 && (
@@ -486,11 +548,27 @@ const PrintableInvoice = ({ isOpen, onClose, sale }) => {
                     <span>- {creditUsed.toFixed(2)} ج.م</span>
                   </div>
                 )}
-                {cashPaid > 0 && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                    <span>المدفوع {paymentTypeName ? '(' + paymentTypeName + ')' : 'نقداً'}:</span>
-                    <strong>{cashPaid.toFixed(2)} ج.م</strong>
+                {payments.length > 1 ? (
+                  <div style={{ margin: '4px 0', padding: '4px 0', borderTop: '1px dotted #000', borderBottom: '1px dotted #000' }}>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 700, marginBottom: 2 }}>طرق السداد ({payments.length}):</div>
+                    {payments.map((p, pIdx) => (
+                      <div key={pIdx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: 1 }}>
+                        <span>• {p.payment_type_name || p.name || 'طريقة دفع'}:</span>
+                        <strong>{Number(p.amount || 0).toFixed(2)} ج.م</strong>
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, marginTop: 2 }}>
+                      <span>إجمالي المدفوع:</span>
+                      <strong>{cashPaid.toFixed(2)} ج.م</strong>
+                    </div>
                   </div>
+                ) : (
+                  cashPaid > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                      <span>المدفوع {paymentTypeName ? '(' + paymentTypeName + ')' : 'نقداً'}:</span>
+                      <strong>{cashPaid.toFixed(2)} ج.م</strong>
+                    </div>
+                  )
                 )}
                 {settlementAmount > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, color: '#000', fontSize: '0.82rem' }}>

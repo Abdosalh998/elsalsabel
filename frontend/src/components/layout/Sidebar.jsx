@@ -14,7 +14,9 @@ import {
   ArrowLeftRight,
   RotateCcw,
   Palette,
-  HandCoins
+  HandCoins,
+  ClipboardCheck,
+  Layers
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import './Layout.css';
@@ -29,6 +31,7 @@ const Sidebar = ({ isOpen, toggleSidebar }) => {
     { name: 'العملاء', path: '/branch/customers', icon: Users },
     { name: 'أرصدة العملاء', path: '/branch/balances', icon: Wallet },
     { name: 'المخزن', path: '/branch/inventory', icon: Package },
+    { name: 'الجرد', path: '/branch/jard', icon: Layers },
     { name: 'المشتريات', path: '/branch/purchases', icon: Truck },
     { name: 'التلوين', path: '/branch/coloring', icon: Palette },
     { name: 'المبيعات', path: '/branch/sales', icon: ShoppingCart },

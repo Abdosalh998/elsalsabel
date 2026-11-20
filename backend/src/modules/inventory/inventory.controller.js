@@ -66,6 +66,7 @@ const getInventory = async (req, res, next) => {
         roll_price,
         price_per_kg,
         image_url,
+        scale_ticket_image,
         issued_quantity,
         issued_rolls,
         available_quantity,
@@ -74,7 +75,11 @@ const getInventory = async (req, res, next) => {
         -- Remaining rolls count
         GREATEST(0, COALESCE(count, 0) - COALESCE(issued_rolls, 0)) AS available_rolls,
         total,
-        notes
+        notes,
+        section_id,
+        (SELECT name FROM inventory_sections s WHERE s.id = inventory.section_id) AS section_name,
+        (SELECT total_weight FROM inventory_sections s WHERE s.id = inventory.section_id) AS section_total_weight,
+        (SELECT (total_weight - issued_weight) FROM inventory_sections s WHERE s.id = inventory.section_id) AS section_available_weight
       FROM inventory
       ${baseWhere}
       ORDER BY date DESC, id DESC
@@ -133,7 +138,8 @@ const addInventory = async (req, res, next) => {
       price_per_kg = 0,
       image_url = null,
       scale_ticket_image = null,
-      notes = ''
+      notes = '',
+      section_id = null
     } = req.body;
 
     if (!date || !product) return sendError(res, 'التاريخ واسم المنتج مطلوبان');
@@ -143,6 +149,7 @@ const addInventory = async (req, res, next) => {
     const effectiveRollPrice = Number(roll_price) || 0;
     const effectivePricePerKg = Number(price_per_kg) || 0;
     const itemTotal = Number(count) > 0 ? (Number(count) * effectiveRollPrice) : (Number(weight_quantity) * effectivePricePerKg);
+    const secId = section_id && !isNaN(Number(section_id)) ? Number(section_id) : null;
 
     // 1. Record immutable supply entry in inventory_supplies
     await pool.query(
@@ -182,9 +189,10 @@ const addInventory = async (req, res, next) => {
              notes = COALESCE(NULLIF($7, ''), notes),
              image_url = COALESCE(NULLIF($8, ''), image_url),
              scale_ticket_image = COALESCE(NULLIF($9, ''), scale_ticket_image),
+             section_id = COALESCE($10, section_id),
              updated_at = NOW()
-         WHERE id = $10 RETURNING *`,
-        [date, newWeight, newCount, effRollPrice, effPricePerKg, newTotal, notes, image_url, scale_ticket_image, current.id]
+         WHERE id = $11 RETURNING *`,
+        [date, newWeight, newCount, effRollPrice, effPricePerKg, newTotal, notes, image_url, scale_ticket_image, secId, current.id]
       );
       return sendSuccess(res, result.rows[0], 200, 'تم إضافة وتحديث كمية المنتج بالمخزن بنجاح');
     }
@@ -192,9 +200,9 @@ const addInventory = async (req, res, next) => {
     // New product entry for this company
     const result = await pool.query(
       `INSERT INTO inventory 
-       (branch_id, date, company, product, weight_quantity, count, roll_price, price_per_kg, total, notes, image_url, scale_ticket_image)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [branch_id, date, cleanCompany, cleanProduct, weight_quantity, count, effectiveRollPrice, effectivePricePerKg, itemTotal, notes, image_url, scale_ticket_image]
+       (branch_id, date, company, product, weight_quantity, count, roll_price, price_per_kg, total, notes, image_url, scale_ticket_image, section_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [branch_id, date, cleanCompany, cleanProduct, weight_quantity, count, effectiveRollPrice, effectivePricePerKg, itemTotal, notes, image_url, scale_ticket_image, secId]
     );
 
     return sendSuccess(res, result.rows[0], 201, 'تم إضافة المنتج للمخزن بنجاح');
@@ -215,7 +223,8 @@ const updateInventory = async (req, res, next) => {
       weight_quantity, count, roll_price,
       price_per_kg = 0, image_url = null,
       scale_ticket_image = null,
-      notes
+      notes,
+      section_id
     } = req.body;
 
     // Fetch existing record
@@ -241,6 +250,17 @@ const updateInventory = async (req, res, next) => {
     const effectivePricePerKg = Number(price_per_kg) || 0;
     const total = newCount * effectiveRollPrice;
 
+    let updateSectionSql = '';
+    const updateParams = [date, company, product, weight_quantity, count, effectiveRollPrice, effectivePricePerKg, total, notes, image_url, scale_ticket_image];
+    let nextIdx = 12;
+    if (section_id !== undefined) {
+      const secVal = (section_id && !isNaN(Number(section_id))) ? Number(section_id) : null;
+      updateSectionSql = `, section_id = $${nextIdx}`;
+      updateParams.push(secVal);
+      nextIdx++;
+    }
+    updateParams.push(id, branch_id);
+
     const result = await pool.query(
       `UPDATE inventory 
        SET date = COALESCE($1, date),
@@ -253,10 +273,11 @@ const updateInventory = async (req, res, next) => {
            total = $8,
            notes = $9,
            image_url = COALESCE(NULLIF($10, ''), image_url),
-           scale_ticket_image = COALESCE(NULLIF($11, ''), scale_ticket_image),
+           scale_ticket_image = COALESCE(NULLIF($11, ''), scale_ticket_image)
+           ${updateSectionSql},
            updated_at = NOW()
-       WHERE id = $12 AND branch_id = $13 RETURNING *`,
-      [date, company, product, weight_quantity, count, effectiveRollPrice, effectivePricePerKg, total, notes, image_url, scale_ticket_image, id, branch_id]
+       WHERE id = $${nextIdx} AND branch_id = $${nextIdx + 1} RETURNING *`,
+      updateParams
     );
 
     return sendSuccess(res, result.rows[0], 200, 'تم تحديث بيانات المخزن بنجاح');
@@ -484,18 +505,22 @@ const getInventorySupplies = async (req, res, next) => {
 const getGroupedInventory = async (req, res, next) => {
   try {
     const branch_id = getEffectiveBranchId(req);
-    const whereBranch = branch_id ? `WHERE branch_id = $1 AND` : `WHERE`;
+    const whereBranch = branch_id ? `WHERE branch_id = $1` : ``;
     const params = branch_id ? [branch_id] : [];
     const result = await pool.query(`
       SELECT 
         TRIM(product) AS product,
         COALESCE(SUM(available_quantity), 0) AS total_available_weight,
+        COALESCE(SUM(available_quantity), 0) AS available_quantity,
         COALESCE(SUM(GREATEST(0, count - COALESCE(issued_rolls, 0))), 0) AS total_available_rolls,
+        COALESCE(SUM(GREATEST(0, count - COALESCE(issued_rolls, 0))), 0) AS available_rolls,
         COALESCE(SUM(weight_quantity), 0) AS total_weight_quantity,
         COALESCE(SUM(issued_quantity), 0) AS total_issued_quantity,
         COALESCE(AVG(NULLIF(price_per_kg, 0)), 0) AS avg_price_per_kg,
         COALESCE(AVG(NULLIF(roll_price, 0)), 0) AS avg_roll_price,
         MIN(id) AS sample_id,
+        MIN(section_id) AS section_id,
+        (SELECT name FROM inventory_sections s WHERE s.id = MIN(inventory.section_id)) AS section_name,
         json_agg(
           json_build_object(
             'id', id,
@@ -507,11 +532,13 @@ const getGroupedInventory = async (req, res, next) => {
             'issued_rolls', issued_rolls,
             'available_rolls', GREATEST(0, count - COALESCE(issued_rolls, 0)),
             'price_per_kg', price_per_kg,
-            'roll_price', roll_price
+            'roll_price', roll_price,
+            'section_id', section_id,
+            'section_name', (SELECT name FROM inventory_sections s WHERE s.id = inventory.section_id)
           ) ORDER BY date ASC, id ASC
         ) AS company_items
       FROM inventory
-      ${whereBranch} (weight_quantity - issued_quantity) > 0
+      ${whereBranch}
       GROUP BY TRIM(product)
       ORDER BY product ASC
     `, params);
@@ -522,12 +549,12 @@ const getGroupedInventory = async (req, res, next) => {
   }
 };
 
-module.exports = { 
-  getInventory, 
-  addInventory, 
-  updateInventory, 
-  deleteInventory, 
-  getUniqueValues, 
-  getInventorySupplies, 
-  getGroupedInventory 
+module.exports = {
+  getInventory,
+  addInventory,
+  updateInventory,
+  deleteInventory,
+  getUniqueValues,
+  getInventorySupplies,
+  getGroupedInventory
 };

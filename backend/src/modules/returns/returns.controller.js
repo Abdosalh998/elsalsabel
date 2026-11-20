@@ -227,19 +227,21 @@ const addReturn = async (req, res, next) => {
     let finalProduct = product;
     let finalCompany = company;
 
+    let invCheck = null;
     if (finalInvId) {
-      const invCheck = await client.query(`SELECT id, product, company FROM inventory WHERE id = $1 AND branch_id = $2 FOR UPDATE`, [finalInvId, branch_id]);
+      invCheck = await client.query(`SELECT id, product, company, section_id FROM inventory WHERE id = $1 AND branch_id = $2 FOR UPDATE`, [finalInvId, branch_id]);
       if (invCheck.rows.length === 0) throw new Error('صنف المخزون المحدد غير موجود');
       if (!finalProduct) finalProduct = invCheck.rows[0].product;
       if (!finalCompany) finalCompany = invCheck.rows[0].company || '';
     } else if (finalProduct) {
       // Find or create inventory item
       const existInv = await client.query(
-        `SELECT id, product, company FROM inventory WHERE product ILIKE $1 AND COALESCE(company,'') = $2 AND branch_id = $3 LIMIT 1 FOR UPDATE`,
+        `SELECT id, product, company, section_id FROM inventory WHERE product ILIKE $1 AND COALESCE(company,'') = $2 AND branch_id = $3 LIMIT 1 FOR UPDATE`,
         [finalProduct.trim(), (finalCompany || '').trim(), branch_id]
       );
       if (existInv.rows.length > 0) {
         finalInvId = existInv.rows[0].id;
+        invCheck = existInv;
       } else {
         const newInv = await client.query(
           `INSERT INTO inventory (branch_id, date, company, product, weight_quantity, count, roll_price, price_per_kg, total, notes)
@@ -263,6 +265,16 @@ const addReturn = async (req, res, next) => {
        WHERE id = $3`,
       [returnWeight, Number(rolls_count) || 0, finalInvId]
     );
+
+    // If item belongs to a section, restore section available weight
+    if (invCheck?.rows?.[0]?.section_id) {
+      await client.query(
+        `UPDATE inventory_sections
+         SET issued_weight = GREATEST(0, issued_weight - $1), updated_at = NOW()
+         WHERE id = $2 AND branch_id = $3`,
+        [returnWeight, invCheck.rows[0].section_id, branch_id]
+      );
+    }
 
     const shouldAddToBalance = add_to_balance === true || add_to_balance === 'true';
 
@@ -396,6 +408,15 @@ const deleteReturn = async (req, res, next) => {
 
     // Deduct returned weight (and rolls) from inventory
     if (ret.inventory_id) {
+      const invRow = await client.query(`SELECT section_id FROM inventory WHERE id = $1`, [ret.inventory_id]);
+      if (invRow.rows[0]?.section_id) {
+        await client.query(
+          `UPDATE inventory_sections
+           SET issued_weight = issued_weight + $1, updated_at = NOW()
+           WHERE id = $2 AND branch_id = $3`,
+          [Number(ret.weight || 0), invRow.rows[0].section_id, branch_id]
+        );
+      }
       await client.query(
         `UPDATE inventory 
          SET weight_quantity = GREATEST(0, weight_quantity - $1),

@@ -1,5 +1,6 @@
 const pool = require('../../config/db');
 const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
+const { getCurrentTreasuryBalance } = require('../treasury/treasury.controller');
 
 /**
  * GET /api/custody
@@ -326,6 +327,22 @@ const addCustody = async (req, res, next) => {
       finalReceiptNum = `${prefix}-${String(parseInt(countRes.rows[0].count, 10) + 1).padStart(4, '0')}`;
     }
 
+    // ── Check treasury liquidity on disbursement to prevent negative balances ──
+    if (type === 'disbursement') {
+      const treasuryBal = await getCurrentTreasuryBalance(branch_id);
+      const availLiquidity = Number(treasuryBal?.channels?.[effectiveChannel] ?? treasuryBal?.total ?? 0);
+      if (numAmount > availLiquidity) {
+        const chNames = { cash: 'نقدي (كاش)', wallet: 'محفظة إلكترونية', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+        const chName = chNames[effectiveChannel] || effectiveChannel;
+        await client.query('ROLLBACK');
+        return sendError(
+          res,
+          `رصيد الخزينة المتاح في قناة (${chName}) هو ${availLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م، ولا يكفي لتسليم العهدة المطلوبة (${numAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م). تم منع العملية لتفادي الأرصدة السالبة بالخزينة.`,
+          400
+        );
+      }
+    }
+
     const insertResult = await client.query(
       `INSERT INTO custodies
         (branch_id, date, person_name, phone, type, amount,
@@ -363,7 +380,9 @@ const addCustody = async (req, res, next) => {
  * Update custody record
  */
 const updateCustody = async (req, res, next) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const { branch_id } = req.user;
     const { id } = req.params;
     const {
@@ -376,19 +395,28 @@ const updateCustody = async (req, res, next) => {
       receipt_number,
       receipt_image,
       notes,
+      item_description,
     } = req.body;
 
-    const existingRes = await pool.query(
+    const existingRes = await client.query(
       `SELECT * FROM custodies WHERE id = $1 AND branch_id = $2`,
       [id, branch_id]
     );
     if (!existingRes.rows.length) {
+      await client.query('ROLLBACK');
       return sendError(res, 'سجل العهدة غير موجود', 404);
+    }
+
+    const existing = existingRes.rows[0];
+    const parsedAmount = (amount !== undefined && amount !== null && amount !== '') ? parseFloat(amount) : null;
+    if (parsedAmount !== null && (isNaN(parsedAmount) || parsedAmount <= 0)) {
+      await client.query('ROLLBACK');
+      return sendError(res, 'يجب إدخال مبلغ صحيح أكبر من الصفر', 400);
     }
 
     let effectiveChannel = channel;
     if (payment_type_id && !channel) {
-      const ptRes = await pool.query(
+      const ptRes = await client.query(
         `SELECT channel FROM payment_types WHERE id = $1 AND branch_id = $2`,
         [payment_type_id, branch_id]
       );
@@ -397,37 +425,113 @@ const updateCustody = async (req, res, next) => {
       }
     }
 
-    const updateRes = await pool.query(
-      `UPDATE custodies
-       SET date = COALESCE($1, date),
-           person_name = COALESCE(NULLIF($2, ''), person_name),
-           phone = COALESCE($3, phone),
-           amount = COALESCE($4, amount),
-           payment_type_id = COALESCE($5, payment_type_id),
-           channel = COALESCE($6, channel),
-           receipt_number = COALESCE($7, receipt_number),
-           receipt_image = COALESCE($8, receipt_image),
-           notes = COALESCE($9, notes),
-           updated_at = NOW()
-       WHERE id = $10
-       RETURNING *`,
-      [
-        date,
-        person_name ? person_name.trim() : null,
-        phone,
-        amount ? parseFloat(amount) : null,
-        payment_type_id,
-        effectiveChannel,
-        receipt_number,
-        receipt_image,
-        notes,
-        id,
-      ]
-    );
+    // ── Check treasury liquidity on disbursement increase ────────────────
+    if (existing.type === 'disbursement' && parsedAmount !== null && parsedAmount > Number(existing.amount)) {
+      const treasuryBal = await getCurrentTreasuryBalance(branch_id);
+      const targetChannel = effectiveChannel || existing.channel || 'cash';
+      const availLiquidity = Number(treasuryBal?.channels?.[targetChannel] ?? treasuryBal?.total ?? 0);
+      const diff = parsedAmount - Number(existing.amount);
+      if (diff > availLiquidity) {
+        const chNames = { cash: 'نقدي (كاش)', wallet: 'محفظة إلكترونية', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+        const chName = chNames[targetChannel] || targetChannel;
+        await client.query('ROLLBACK');
+        return sendError(
+          res,
+          `رصيد الخزينة المتاح في قناة (${chName}) هو ${availLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م، ولا يكفي لتغطية زيادة العهدة (${diff.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م). تم منع العملية لتفادي الأرصدة السالبة بالخزينة.`,
+          400
+        );
+      }
+    }
 
-    return sendSuccess(res, updateRes.rows[0], 200, 'تم تحديث سجل العهدة بنجاح');
+    let updatedRow;
+
+    // If this custody movement is linked to a transfer between two persons
+    if (existing.transfer_id) {
+      const trfId = existing.transfer_id;
+      // Synchronize amount, date, receipt_number, notes on both sides in custodies
+      await client.query(
+        `UPDATE custodies
+         SET date = COALESCE($1, date),
+             amount = COALESCE($2, amount),
+             receipt_number = COALESCE($3, receipt_number),
+             notes = COALESCE($4, notes),
+             updated_at = NOW()
+         WHERE transfer_id = $5 AND branch_id = $6`,
+        [
+          date || null,
+          parsedAmount,
+          receipt_number || null,
+          notes !== undefined ? notes : null,
+          trfId,
+          branch_id,
+        ]
+      );
+
+      // Synchronize the record in custody_transfers table
+      await client.query(
+        `UPDATE custody_transfers
+         SET date = COALESCE($1, date),
+             amount = COALESCE($2, amount),
+             receipt_number = COALESCE($3, receipt_number),
+             notes = COALESCE($4, notes),
+             updated_at = NOW()
+         WHERE id = $5 AND branch_id = $6`,
+        [
+          date || null,
+          parsedAmount,
+          receipt_number || null,
+          notes !== undefined ? notes : null,
+          trfId,
+          branch_id,
+        ]
+      );
+
+      const refreshed = await client.query(
+        `SELECT * FROM custodies WHERE id = $1 AND branch_id = $2`,
+        [id, branch_id]
+      );
+      updatedRow = refreshed.rows[0];
+    } else {
+      // Normal custody movement or deduction
+      const updateRes = await client.query(
+        `UPDATE custodies
+         SET date = COALESCE($1, date),
+             person_name = COALESCE(NULLIF($2, ''), person_name),
+             phone = COALESCE($3, phone),
+             amount = COALESCE($4, amount),
+             payment_type_id = COALESCE($5, payment_type_id),
+             channel = COALESCE($6, channel),
+             receipt_number = COALESCE($7, receipt_number),
+             receipt_image = COALESCE($8, receipt_image),
+             notes = COALESCE($9, notes),
+             item_description = COALESCE($10, item_description),
+             updated_at = NOW()
+         WHERE id = $11
+         RETURNING *`,
+        [
+          date || null,
+          person_name ? person_name.trim() : null,
+          phone !== undefined ? phone : null,
+          parsedAmount,
+          payment_type_id || null,
+          effectiveChannel || null,
+          receipt_number || null,
+          receipt_image || null,
+          notes !== undefined ? notes : null,
+          item_description || null,
+          id,
+        ]
+      );
+      updatedRow = updateRes.rows[0];
+    }
+
+    await client.query('COMMIT');
+    return sendSuccess(res, updatedRow, 200, 'تم تحديث سجل العهدة بنجاح');
   } catch (err) {
+    await client.query('ROLLBACK');
     next(err);
+  } finally {
+    client.release();
   }
 };
 
@@ -756,6 +860,113 @@ const getCustodyTransfers = async (req, res, next) => {
 };
 
 /**
+ * PUT /api/custody/transfers/:id
+ * Update custody transfer (amount, date, receipt_number, notes, persons)
+ */
+const updateCustodyTransfer = async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { branch_id } = req.user;
+    const { id } = req.params;
+    const { date, amount, receipt_number, notes, from_person, to_person } = req.body;
+
+    const trfRes = await client.query(
+      `SELECT * FROM custody_transfers WHERE id = $1 AND branch_id = $2`,
+      [id, branch_id]
+    );
+    if (!trfRes.rows.length) {
+      await client.query('ROLLBACK');
+      return sendError(res, 'سجل تحويل العهدة غير موجود', 404);
+    }
+
+    const parsedAmount = (amount !== undefined && amount !== null && amount !== '') ? parseFloat(amount) : null;
+    if (parsedAmount !== null && (isNaN(parsedAmount) || parsedAmount <= 0)) {
+      await client.query('ROLLBACK');
+      return sendError(res, 'يجب إدخال مبلغ صحيح أكبر من الصفر', 400);
+    }
+
+    // Update custody_transfers
+    const updatedTrf = await client.query(
+      `UPDATE custody_transfers
+       SET date = COALESCE($1, date),
+           from_person = COALESCE(NULLIF($2, ''), from_person),
+           to_person = COALESCE(NULLIF($3, ''), to_person),
+           amount = COALESCE($4, amount),
+           receipt_number = COALESCE($5, receipt_number),
+           notes = COALESCE($6, notes),
+           updated_at = NOW()
+       WHERE id = $7 AND branch_id = $8
+       RETURNING *`,
+      [
+        date || null,
+        from_person ? from_person.trim() : null,
+        to_person ? to_person.trim() : null,
+        parsedAmount,
+        receipt_number || null,
+        notes !== undefined ? notes : null,
+        id,
+        branch_id,
+      ]
+    );
+
+    // Update sender (transfer_out) in custodies
+    await client.query(
+      `UPDATE custodies
+       SET date = COALESCE($1, date),
+           person_name = COALESCE(NULLIF($2, ''), person_name),
+           amount = COALESCE($3, amount),
+           receipt_number = COALESCE($4, receipt_number),
+           notes = COALESCE($5, notes),
+           item_description = CASE WHEN $6::text IS NOT NULL THEN 'تحويل عهدة إلى ' || $6 ELSE item_description END,
+           updated_at = NOW()
+       WHERE transfer_id = $7 AND branch_id = $8 AND sub_type = 'transfer_out'`,
+      [
+        date || null,
+        from_person ? from_person.trim() : null,
+        parsedAmount,
+        receipt_number || null,
+        notes !== undefined ? notes : null,
+        to_person ? to_person.trim() : null,
+        id,
+        branch_id,
+      ]
+    );
+
+    // Update receiver (transfer_in) in custodies
+    await client.query(
+      `UPDATE custodies
+       SET date = COALESCE($1, date),
+           person_name = COALESCE(NULLIF($2, ''), person_name),
+           amount = COALESCE($3, amount),
+           receipt_number = COALESCE($4, receipt_number),
+           notes = COALESCE($5, notes),
+           item_description = CASE WHEN $6::text IS NOT NULL THEN 'تحويل عهدة من ' || $6 ELSE item_description END,
+           updated_at = NOW()
+       WHERE transfer_id = $7 AND branch_id = $8 AND sub_type = 'transfer_in'`,
+      [
+        date || null,
+        to_person ? to_person.trim() : null,
+        parsedAmount,
+        receipt_number || null,
+        notes !== undefined ? notes : null,
+        from_person ? from_person.trim() : null,
+        id,
+        branch_id,
+      ]
+    );
+
+    await client.query('COMMIT');
+    return sendSuccess(res, updatedTrf.rows[0], 200, 'تم تحديث حركة تحويل العهدة بنجاح');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+};
+
+/**
  * DELETE /api/custody/transfers/:id
  * Delete custody transfer and revert both persons balances
  */
@@ -804,6 +1015,7 @@ module.exports = {
   deletePersonCustodies,
   addDeduction,
   addCustodyTransfer,
+  updateCustodyTransfer,
   getCustodyTransfers,
   deleteCustodyTransfer,
 };

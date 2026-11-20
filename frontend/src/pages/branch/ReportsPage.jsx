@@ -8,7 +8,7 @@ import {
   Receipt, Users, Filter, Printer,
   RefreshCw, AlertCircle, ArrowUpRight, Award, BarChart2, TrendingDown,
   LayoutGrid, Table as TableIcon, PieChart as PieChartIcon,
-  Palette, HandCoins
+  Palette, HandCoins, ArrowLeftRight
 } from 'lucide-react';
 import { format, subDays, startOfMonth, endOfMonth } from 'date-fns';
 import toast from 'react-hot-toast';
@@ -77,6 +77,8 @@ const MODULES = [
   { key: 'customers', label: 'العملاء والمديونيات', icon: Users, color: '#dc2626', gradient: 'linear-gradient(135deg,#dc2626,#f87171)' },
   { key: 'coloring', label: 'تقرير التلوين', icon: Palette, color: '#6366f1', gradient: 'linear-gradient(135deg,#6366f1,#a5b4fc)' },
   { key: 'custody', label: 'تقرير العهد', icon: HandCoins, color: '#8b5cf6', gradient: 'linear-gradient(135deg,#8b5cf6,#c4b5fd)' },
+  { key: 'custody_transfers', label: 'تحويلات العهد', icon: HandCoins, color: '#db2777', gradient: 'linear-gradient(135deg,#db2777,#f9a8d4)' },
+  { key: 'branch_transfers', label: 'تحويلات الفروع', icon: ArrowLeftRight, color: '#0d9488', gradient: 'linear-gradient(135deg,#0d9488,#2dd4bf)' },
 ];
 
 const DATE_SHORTCUTS = [
@@ -104,6 +106,8 @@ const ReportsPage = ({ branchIdOverride = null }) => {
   const [customerStatus, setCustomerStatus] = useState('all');
   const [coloringStatus, setColoringStatus] = useState('');
   const [custodyType, setCustodyType] = useState('');
+  const [transferTypeFilter, setTransferTypeFilter] = useState('all');
+  const [transferStatusFilter, setTransferStatusFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Dropdown reference lists
@@ -210,6 +214,20 @@ const ReportsPage = ({ branchIdOverride = null }) => {
             personName: searchQuery || undefined
           });
           break;
+        case 'custody_transfers':
+          res = await reportsService.getCustodyTransfersReport({
+            ...baseParams,
+            search: searchQuery || undefined
+          });
+          break;
+        case 'branch_transfers':
+          res = await reportsService.getBranchTransfersReport({
+            ...baseParams,
+            type: transferTypeFilter !== 'all' ? transferTypeFilter : undefined,
+            status: transferStatusFilter !== 'all' ? transferStatusFilter : undefined,
+            search: searchQuery || undefined
+          });
+          break;
         default:
           break;
       }
@@ -221,7 +239,7 @@ const ReportsPage = ({ branchIdOverride = null }) => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeModule, startDate, endDate, selectedCustomerId, selectedChannel, selectedCompany, customerStatus, coloringStatus, custodyType, searchQuery, branchIdOverride]);
+  }, [activeModule, startDate, endDate, selectedCustomerId, selectedChannel, selectedCompany, customerStatus, coloringStatus, custodyType, transferTypeFilter, transferStatusFilter, searchQuery, branchIdOverride]);
 
   useEffect(() => {
     fetchReport();
@@ -385,7 +403,6 @@ const ReportsPage = ({ branchIdOverride = null }) => {
 
       case 'treasury': {
         const sum = reportData?.summary || {};
-        const ob = reportData?.overallBalance || {};
         return {
           title: 'تقرير حركة الخزينة والمقبوضات',
           subtitle: periodLabel,
@@ -395,7 +412,6 @@ const ReportsPage = ({ branchIdOverride = null }) => {
             { label: 'محافظ إلكترونية', value: `${fmt(sum.wallet_in)} ج.م`, color: '#d97706' },
             { label: 'انستاباي', value: `${fmt(sum.instapay_in)} ج.م`, color: '#2563eb' },
             { label: 'إيداع بنكي', value: `${fmt(sum.bank_in)} ج.م`, color: '#92400e' },
-            { label: 'الرصيد الفعلي الحالي', value: `${fmt(ob.total)} ج.م`, color: '#1A3A5C' },
           ],
           columns: [
             { header: 'التاريخ', key: 'date', render: r => r.date ? format(new Date(r.date), 'yyyy/MM/dd') : '-' },
@@ -557,6 +573,91 @@ const ReportsPage = ({ branchIdOverride = null }) => {
             { header: 'ملاحظات', key: 'notes', render: r => r.notes || '-' }
           ],
           data: reportData?.transactions || []
+        };
+      }
+
+      case 'custody_transfers': {
+        const tsum = reportData?.summary || {};
+        return {
+          title: 'تقرير تحويلات العهد بين الأفراد',
+          subtitle: periodLabel,
+          summaryCards: [
+            { label: 'عدد التحويلات', value: tsum.transfers_count || 0, color: '#db2777' },
+            { label: 'إجمالي المبالغ المحولة', value: `${fmt(tsum.total_amount)} ج.م`, color: '#1A3A5C' },
+            { label: 'متوسط التحويل', value: `${fmt(tsum.avg_transfer)} ج.م`, color: '#7c3aed' },
+            { label: 'أعلى محوّل', value: tsum.top_sender ? `${tsum.top_sender.from_person} (${fmt(tsum.top_sender.total)} ج.م)` : '—', color: '#dc2626' },
+            { label: 'أعلى مستلم', value: tsum.top_receiver ? `${tsum.top_receiver.to_person} (${fmt(tsum.top_receiver.total)} ج.م)` : '—', color: '#16a34a' },
+          ],
+          columns: [
+            { header: 'التاريخ', key: 'date', render: r => r.date ? format(new Date(r.date), 'yyyy/MM/dd') : '-' },
+            { header: 'رقم السند', key: 'receipt_number', render: r => r.receipt_number || `#${r.id}` },
+            { header: 'المحوَّل منه', key: 'from_person' },
+            { header: 'المحوَّل إليه', key: 'to_person' },
+            { header: 'المبلغ المحوَّل', key: 'amount', align: 'left', render: r => `${fmt(r.amount)} ج.م` },
+            { header: 'ملاحظات', key: 'notes', render: r => r.notes || '-' },
+          ],
+          data: reportData?.transfers || []
+        };
+      }
+
+      case 'branch_transfers': {
+        const bsum = reportData?.summary || {};
+        return {
+          title: 'تقرير التحويلات بين الفروع (نقدية ومخزنية)',
+          subtitle: periodLabel,
+          summaryCards: [
+            { label: 'إجمالي التحويلات', value: bsum.transfers_count || 0, color: '#0d9488' },
+            { label: 'صادر مالي (مكتمل)', value: `${fmt(bsum.total_monetary_outgoing)} ج.م`, color: '#dc2626' },
+            { label: 'وارد مالي (مستلم)', value: `${fmt(bsum.total_monetary_incoming)} ج.م`, color: '#16a34a' },
+            { label: 'تحويلات مخزنية', value: bsum.inventory_transfers_count || 0, color: '#7c3aed' },
+            { label: 'قيد الانتظار', value: bsum.total_pending || 0, color: '#d97706' },
+            { label: 'مكتملة ومعتمدة', value: bsum.total_completed || 0, color: '#2563eb' }
+          ],
+          columns: [
+            { header: 'رقم الإذن', key: 'transfer_number', render: r => r.transfer_number || `#${r.id}` },
+            { header: 'التاريخ', key: 'created_at', render: r => r.created_at ? format(new Date(r.created_at), 'yyyy/MM/dd HH:mm') : '-' },
+            { header: 'الفرع المرسل', key: 'from_branch_name' },
+            { header: 'الفرع المستلم', key: 'to_branch_name' },
+            { header: 'النوع', key: 'type', render: r => r.type === 'monetary' ? 'مالي (نقدية)' : 'مخزني (بضاعة)' },
+            {
+              header: 'التفاصيل / القيمة',
+              key: 'amount',
+              align: 'left',
+              render: r => {
+                if (r.type === 'monetary') {
+                  const chName = r.channel === 'cash' ? 'نقدي' : r.channel === 'wallet' ? 'محفظة' : r.channel === 'instapay' ? 'انستاباي' : 'إيداع بنكي';
+                  return `${fmt(r.amount)} ج.م (${chName})`;
+                }
+                const itemsCount = (r.items || []).length;
+                const totalWeight = (r.items || []).reduce((acc, it) => acc + Number(it.weight || 0), 0);
+                const totalRolls = (r.items || []).reduce((acc, it) => acc + Number(it.rolls_count || 0), 0);
+                return `${itemsCount} صنف - ${fmt(totalWeight)} كجم (${totalRolls} لفة)`;
+              }
+            },
+            {
+              header: 'الحالة',
+              key: 'status',
+              render: r => {
+                const map = {
+                  completed: { text: 'مكتمل ومستلم', color: '#16a34a', bg: '#dcfce7' },
+                  pending: { text: 'قيد الانتظار', color: '#d97706', bg: '#fef3c7' },
+                  rejected: { text: 'مرفوض', color: '#dc2626', bg: '#fee2e2' },
+                  cancelled: { text: 'ملغي', color: '#64748b', bg: '#f1f5f9' }
+                };
+                const st = map[r.status] || { text: r.status, color: '#334155', bg: '#f1f5f9' };
+                return (
+                  <span style={{
+                    display: 'inline-block', padding: '3px 9px', borderRadius: 20,
+                    fontSize: '0.78rem', fontWeight: 700, color: st.color, background: st.bg
+                  }}>
+                    {st.text}
+                  </span>
+                );
+              }
+            },
+            { header: 'ملاحظات', key: 'notes', render: r => r.notes || '-' }
+          ],
+          data: reportData?.transfers || []
         };
       }
 
@@ -1085,6 +1186,77 @@ const ReportsPage = ({ branchIdOverride = null }) => {
     );
   };
 
+  const renderCustodyTransfersCharts = () => {
+    const monthly = (reportData?.monthlyBreakdown || []).map(m => ({
+      month: m.month,
+      count: Number(m.count || 0),
+      total_amount: Number(m.total_amount || 0),
+    }));
+
+    const topSenders = (reportData?.topSenders || []).map(s => ({
+      name: s.name,
+      total: Number(s.total || 0),
+    }));
+
+    const topReceivers = (reportData?.topReceivers || []).map(r => ({
+      name: r.name,
+      total: Number(r.total || 0),
+    }));
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 20 }}>
+        {monthly.length > 0 && (
+          <ChartCard title="حجم التحويلات شهرياً (ج.م)">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={monthly} margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#475569', fontWeight: 600 }} />
+                <YAxis tickFormatter={fmtShort} tick={{ fontSize: 11, fill: '#64748b' }} />
+                <Tooltip content={<CustomTooltip suffix=" ج.م" />} />
+                <Bar dataKey="total_amount" name="إجمالي التحويلات" fill="#db2777" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {topSenders.length > 0 && (
+          <ChartCard title="أعلى الأشخاص تحويلاً (ج.م)">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={topSenders} layout="vertical" margin={{ top: 10, right: 20, left: 20, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis type="number" tickFormatter={fmtShort} tick={{ fontSize: 11, fill: '#64748b' }} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#475569', fontWeight: 600 }} width={80} />
+                <Tooltip content={<CustomTooltip suffix=" ج.م" />} />
+                <Bar dataKey="total" name="المبلغ المحوَّل" fill="#dc2626" radius={[0, 6, 6, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {topReceivers.length > 0 && (
+          <ChartCard title="أعلى الأشخاص استلاماً (ج.م)">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={topReceivers} layout="vertical" margin={{ top: 10, right: 20, left: 20, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis type="number" tickFormatter={fmtShort} tick={{ fontSize: 11, fill: '#64748b' }} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#475569', fontWeight: 600 }} width={80} />
+                <Tooltip content={<CustomTooltip suffix=" ج.م" />} />
+                <Bar dataKey="total" name="المبلغ المستلم" fill="#16a34a" radius={[0, 6, 6, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {monthly.length === 0 && topSenders.length === 0 && topReceivers.length === 0 && (
+          <div style={{ gridColumn: '1/-1', padding: '40px 20px', textAlign: 'center', color: '#94a3b8', background: '#fff', borderRadius: 14, border: '1.5px solid #e2e8f0' }}>
+            <AlertCircle size={36} style={{ margin: '0 auto 10px', opacity: 0.4 }} />
+            <div style={{ fontWeight: 700 }}>لا توجد تحويلات عهد في الفترة المحددة</div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderCustodyCharts = () => {
     const sum = reportData?.summary || {};
     const flowData = [
@@ -1160,6 +1332,114 @@ const ReportsPage = ({ branchIdOverride = null }) => {
     );
   };
 
+  const renderBranchTransfersCharts = () => {
+    const monthly = (reportData?.monthlyBreakdown || []).map(m => ({
+      month: m.month,
+      count: Number(m.count || 0),
+      total_monetary: Number(m.total_monetary || 0),
+      inventory_count: Number(m.inventory_count || 0),
+    }));
+
+    const byChannel = (reportData?.byChannel || []).map(c => {
+      const names = { cash: 'نقدي (كاش)', wallet: 'محفظة إلكترونية', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+      return {
+        name: names[c.channel] || c.channel,
+        total: Number(c.total_amount || 0),
+        count: Number(c.count || 0)
+      };
+    }).filter(c => c.total > 0);
+
+    const byBranch = (reportData?.byBranch || []).map(b => ({
+      name: b.branch_name,
+      total: Number(b.total_monetary || 0),
+      count: Number(b.count || 0)
+    }));
+
+    const sum = reportData?.summary || {};
+    const statusData = [
+      { name: 'مكتمل ومستلم', value: Number(sum.total_completed || 0), color: '#16a34a' },
+      { name: 'قيد الانتظار', value: Number(sum.total_pending || 0), color: '#d97706' },
+      { name: 'مرفوض', value: Number(sum.total_rejected || 0), color: '#dc2626' },
+      { name: 'ملغي', value: Number(sum.total_cancelled || 0), color: '#64748b' },
+    ].filter(s => s.value > 0);
+
+    const typeData = [
+      { name: 'تحويلات مالية', value: Number(sum.monetary_transfers_count || 0), color: '#0d9488' },
+      { name: 'تحويلات مخزنية', value: Number(sum.inventory_transfers_count || 0), color: '#7c3aed' },
+    ].filter(t => t.value > 0);
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, marginBottom: 20 }}>
+        {monthly.length > 0 && (
+          <ChartCard title="حجم التحويلات المالية شهرياً (ج.م)">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={monthly} margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#475569', fontWeight: 600 }} />
+                <YAxis tickFormatter={fmtShort} tick={{ fontSize: 11, fill: '#64748b' }} />
+                <Tooltip content={<CustomTooltip suffix=" ج.م" />} />
+                <Bar dataKey="total_monetary" name="إجمالي المبالغ" fill="#0d9488" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {byBranch.length > 0 && (
+          <ChartCard title="أعلى الفروع تعاملاً في التحويلات">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={byBranch} layout="vertical" margin={{ top: 10, right: 20, left: 20, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis type="number" tickFormatter={fmtShort} tick={{ fontSize: 11, fill: '#64748b' }} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#475569', fontWeight: 600 }} width={100} />
+                <Tooltip content={<CustomTooltip suffix=" ج.م" />} />
+                <Bar dataKey="total" name="المبالغ المالية" fill="#2563eb" radius={[0, 6, 6, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {byChannel.length > 0 && (
+          <ChartCard title="توزيع التحويلات المالية حسب القناة">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={byChannel} cx="50%" cy="50%" outerRadius={80} dataKey="total" label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}>
+                  {byChannel.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip content={<CustomTooltip suffix=" ج.م" />} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {statusData.length > 0 && (
+          <ChartCard title="حالة التحويلات">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={statusData} cx="50%" cy="50%" innerRadius={45} outerRadius={80} dataKey="value" label={({ name, value }) => `${name}: ${value}`}>
+                  {statusData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {monthly.length === 0 && byBranch.length === 0 && (
+          <div style={{ gridColumn: '1/-1', padding: '40px 20px', textAlign: 'center', color: '#94a3b8', background: '#fff', borderRadius: 14, border: '1.5px solid #e2e8f0' }}>
+            <AlertCircle size={36} style={{ margin: '0 auto 10px', opacity: 0.4 }} />
+            <div style={{ fontWeight: 700 }}>لا توجد تحويلات بين الفروع في الفترة المحددة</div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderCharts = () => {
     if (!reportData) return null;
     switch (activeModule) {
@@ -1172,6 +1452,8 @@ const ReportsPage = ({ branchIdOverride = null }) => {
       case 'customers': return renderCustomersCharts();
       case 'coloring': return renderColoringCharts();
       case 'custody': return renderCustodyCharts();
+      case 'custody_transfers': return renderCustodyTransfersCharts();
+      case 'branch_transfers': return renderBranchTransfersCharts();
       default: return null;
     }
   };
@@ -1533,15 +1815,59 @@ const ReportsPage = ({ branchIdOverride = null }) => {
             </div>
           )}
 
-          {/* Search Query Filter */}
-          {['purchases', 'inventory', 'expenses', 'coloring', 'custody'].includes(activeModule) && (
+          {/* Branch Transfers Type Filter */}
+          {activeModule === 'branch_transfers' && (
             <div>
               <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: '#64748b', marginBottom: 4 }}>
-                {activeModule === 'coloring' ? 'بحث بشركة التلوين:' : activeModule === 'custody' ? 'بحث باسم الشخص:' : 'بحث بالاسم / البند:'}
+                نوع التحويل:
+              </label>
+              <select
+                value={transferTypeFilter}
+                onChange={e => setTransferTypeFilter(e.target.value)}
+                style={{
+                  width: '100%', padding: '8px 12px', border: '1.5px solid #cbd5e1',
+                  borderRadius: 8, fontSize: '0.84rem', fontFamily: 'inherit', outline: 'none', background: '#fff'
+                }}
+              >
+                <option value="all">-- كل أنواع التحويلات --</option>
+                <option value="monetary">تحويلات مالية (نقدية)</option>
+                <option value="inventory">تحويلات مخزنية (بضاعة)</option>
+              </select>
+            </div>
+          )}
+
+          {/* Branch Transfers Status Filter */}
+          {activeModule === 'branch_transfers' && (
+            <div>
+              <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: '#64748b', marginBottom: 4 }}>
+                حالة التحويل:
+              </label>
+              <select
+                value={transferStatusFilter}
+                onChange={e => setTransferStatusFilter(e.target.value)}
+                style={{
+                  width: '100%', padding: '8px 12px', border: '1.5px solid #cbd5e1',
+                  borderRadius: 8, fontSize: '0.84rem', fontFamily: 'inherit', outline: 'none', background: '#fff'
+                }}
+              >
+                <option value="all">-- كل الحالات --</option>
+                <option value="pending">قيد الانتظار</option>
+                <option value="completed">مكتمل ومستلم</option>
+                <option value="rejected">مرفوض</option>
+                <option value="cancelled">ملغي</option>
+              </select>
+            </div>
+          )}
+
+          {/* Search Query Filter */}
+          {['purchases', 'inventory', 'expenses', 'coloring', 'custody', 'custody_transfers', 'branch_transfers'].includes(activeModule) && (
+            <div>
+              <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: '#64748b', marginBottom: 4 }}>
+                {activeModule === 'coloring' ? 'بحث بشركة التلوين:' : activeModule === 'custody' ? 'بحث باسم الشخص:' : activeModule === 'custody_transfers' ? 'بحث (محوِّل / مستلم / سند):' : activeModule === 'branch_transfers' ? 'بحث (رقم الإذن / اسم الفرع):' : 'بحث بالاسم / البند:'}
               </label>
               <input
                 type="text"
-                placeholder={activeModule === 'coloring' ? 'اسم شركة التلوين...' : activeModule === 'custody' ? 'اسم الشخص...' : 'ابحث هنا...'}
+                placeholder={activeModule === 'coloring' ? 'اسم شركة التلوين...' : activeModule === 'custody' ? 'اسم الشخص...' : activeModule === 'custody_transfers' ? 'اسم الشخص أو رقم السند...' : activeModule === 'branch_transfers' ? 'رقم الإذن أو اسم الفرع...' : 'ابحث هنا...'}
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 style={{

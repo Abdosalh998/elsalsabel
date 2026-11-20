@@ -202,8 +202,9 @@ const DataTable = ({
 
   // ─── Export helpers ──────────────────────────────────────
   const getCellValue = (col, row) => {
-    if (col.render) {
-      const rendered = col.render(row);
+    const renderFn = col.render || col.cell;
+    if (renderFn) {
+      const rendered = renderFn(row);
       if (typeof rendered === 'string' || typeof rendered === 'number') return rendered;
       if (rendered?.props?.children) {
         const children = rendered.props.children;
@@ -212,7 +213,8 @@ const DataTable = ({
           return children.filter(c => typeof c === 'string' || typeof c === 'number').join('');
       }
     }
-    const val = row[col.key];
+    const colKey = col.key || col.accessor;
+    const val = colKey ? row[colKey] : '';
     return val !== null && val !== undefined ? String(val) : '';
   };
 
@@ -220,11 +222,14 @@ const DataTable = ({
     try {
       const exportData = data.map(row => {
         const obj = {};
-        columns.forEach(col => { obj[col.label] = getCellValue(col, row); });
+        columns.forEach(col => {
+          const colLabel = col.label || col.header || '';
+          obj[colLabel] = getCellValue(col, row);
+        });
         return obj;
       });
       const worksheet = XLSX.utils.json_to_sheet(exportData);
-      const colWidths = columns.map(col => ({ wch: Math.max(col.label.length * 2, 15) }));
+      const colWidths = columns.map(col => ({ wch: Math.max((col.label || col.header || '').length * 2, 15) }));
       worksheet['!cols'] = colWidths;
       worksheet['!dir'] = 'rtl';
       const workbook = XLSX.utils.book_new();
@@ -256,7 +261,7 @@ const DataTable = ({
     columns.forEach(col => {
       const th = document.createElement('th');
       th.style.cssText = 'padding: 10px 12px; text-align: right; border: 1px solid #cbd5e1;';
-      th.textContent = col.label;
+      th.textContent = col.label || col.header || '';
       headerRow.appendChild(th);
     });
     thead.appendChild(headerRow);
@@ -429,7 +434,7 @@ const DataTable = ({
         <table className="datatable">
           <thead>
             <tr>
-              {columns.map((col, idx) => <th key={idx}>{col.label}</th>)}
+              {columns.map((col, idx) => <th key={idx}>{col.label || col.header || ''}</th>)}
               {actions && <th className="hide-print">الإجراءات</th>}
             </tr>
           </thead>
@@ -450,11 +455,15 @@ const DataTable = ({
               data.map((row, rowIndex) => (
                 <Fragment key={row.id || rowIndex}>
                   <tr>
-                    {columns.map((col, colIndex) => (
-                      <td key={colIndex}>
-                        {col.render ? col.render(row) : row[col.key]}
-                      </td>
-                    ))}
+                    {columns.map((col, colIndex) => {
+                      const renderFn = col.render || col.cell;
+                      const colKey = col.key || col.accessor;
+                      return (
+                        <td key={colIndex}>
+                          {renderFn ? renderFn(row) : (colKey ? row[colKey] : '')}
+                        </td>
+                      );
+                    })}
                     {actions && (
                       <td className="hide-print">
                         <div className="datatable-row-actions">{actions(row)}</div>
@@ -474,8 +483,9 @@ const DataTable = ({
                   if (col.summary) {
                     content = col.summary(data);
                   } else if (col.sum) {
+                    const colKey = col.key || col.accessor;
                     const total = data.reduce((acc, row) => {
-                      const raw = row[col.key];
+                      const raw = colKey ? row[colKey] : 0;
                       const val = Number(raw !== undefined && raw !== null ? raw : 0);
                       return acc + (isNaN(val) ? 0 : val);
                     }, 0);

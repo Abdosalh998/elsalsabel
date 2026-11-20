@@ -510,7 +510,98 @@ async function runMigrations() {
       ALTER TABLE coloring_orders ADD COLUMN IF NOT EXISTS gain_stocked BOOLEAN DEFAULT FALSE;
       ALTER TABLE coloring_orders ADD COLUMN IF NOT EXISTS stocked_weight NUMERIC(15,3) DEFAULT 0;
       ALTER TABLE coloring_orders ADD COLUMN IF NOT EXISTS stocked_rolls INTEGER DEFAULT 0;
-    `).catch((e) => { console.error('Phase 9 migration error:', e.message); });
+
+      -- Phase 12: Multi-Payment Methods for Sales (تعدد بنود الدفع في المبيعات)
+      CREATE TABLE IF NOT EXISTS sale_payments (
+        id SERIAL PRIMARY KEY,
+        sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+        branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+        payment_type_id INTEGER REFERENCES payment_types(id) ON DELETE RESTRICT,
+        amount NUMERIC(15,2) NOT NULL,
+        channel VARCHAR(30) DEFAULT 'cash',
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_sale_payments_sale ON sale_payments(sale_id);
+      CREATE INDEX IF NOT EXISTS idx_sale_payments_branch ON sale_payments(branch_id);
+    `).catch((e) => { console.error('Phase 9-12 migration error:', e.message); });
+
+    // Phase 13: Inventory Sections (أقسام المخزن)
+    await client.query(`
+      -- جدول أقسام المخزن: كل قسم له وزن إجمالي وأصناف فرعية
+      CREATE TABLE IF NOT EXISTS inventory_sections (
+        id SERIAL PRIMARY KEY,
+        branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+        name VARCHAR(150) NOT NULL,
+        total_weight NUMERIC(15,3) NOT NULL DEFAULT 0,
+        issued_weight NUMERIC(15,3) NOT NULL DEFAULT 0,
+        notes TEXT,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_inv_sections_branch ON inventory_sections(branch_id);
+
+      -- إضافة عمود ربط الصنف بقسمه (nullable لتوافق الأصناف القديمة)
+      ALTER TABLE inventory ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES inventory_sections(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_inventory_section ON inventory(section_id);
+
+      -- إضافة عمود ربط بند البيع بالقسم لحفظ تاريخ العمليات
+      ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES inventory_sections(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_sale_items_section ON sale_items(section_id);
+    `).catch((e) => { console.error('Phase 13 migration error:', e.message); });
+
+    // Phase 14: Independent Jard Module (موديول الجرد المستقل وحركات الوارد والصادر)
+    await client.query(`
+      -- جدول رصيد الجرد المستقل (jard)
+      CREATE TABLE IF NOT EXISTS jard (
+        id SERIAL PRIMARY KEY,
+        branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        company VARCHAR(150) NOT NULL,
+        section_id INTEGER REFERENCES inventory_sections(id) ON DELETE SET NULL,
+        product VARCHAR(150) NOT NULL,
+        opening_rolls INTEGER NOT NULL DEFAULT 0,
+        opening_weight NUMERIC(15,3) DEFAULT 0,
+        incoming_rolls INTEGER NOT NULL DEFAULT 0,
+        incoming_weight NUMERIC(15,3) DEFAULT 0,
+        outgoing_rolls INTEGER NOT NULL DEFAULT 0,
+        outgoing_weight NUMERIC(15,3) DEFAULT 0,
+        available_rolls INTEGER GENERATED ALWAYS AS (opening_rolls + incoming_rolls - outgoing_rolls) STORED,
+        available_weight NUMERIC(15,3) GENERATED ALWAYS AS (opening_weight + incoming_weight - outgoing_weight) STORED,
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_jard_branch ON jard(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_jard_company ON jard(branch_id, LOWER(TRIM(company)));
+      CREATE INDEX IF NOT EXISTS idx_jard_product ON jard(branch_id, LOWER(TRIM(product)));
+      CREATE INDEX IF NOT EXISTS idx_jard_section ON jard(section_id);
+
+      -- جدول حركات الوارد والصادر على رصيد الجرد (jard_movements)
+      CREATE TABLE IF NOT EXISTS jard_movements (
+        id SERIAL PRIMARY KEY,
+        branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+        jard_id INTEGER NOT NULL REFERENCES jard(id) ON DELETE CASCADE,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        type VARCHAR(20) NOT NULL CHECK (type IN ('incoming', 'outgoing')),
+        source VARCHAR(50) NOT NULL DEFAULT 'manual',
+        rolls INTEGER NOT NULL DEFAULT 0,
+        weight NUMERIC(15,3) DEFAULT 0,
+        reference_id INTEGER,
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_jard_movements_jard ON jard_movements(jard_id);
+      CREATE INDEX IF NOT EXISTS idx_jard_movements_branch ON jard_movements(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_jard_movements_date ON jard_movements(date);
+
+      -- إضافة جهة الخصم للمبيعات وبنودها (المخزن العام أو رصيد الجرد)
+      ALTER TABLE sales ADD COLUMN IF NOT EXISTS deduction_source VARCHAR(30) DEFAULT 'general';
+      ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS deduction_source VARCHAR(30) DEFAULT 'general';
+      ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS jard_id INTEGER REFERENCES jard(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_sale_items_jard ON sale_items(jard_id);
+    `).catch((e) => { console.error('Phase 14 (Jard) migration error:', e.message); });
 
     console.log('✅ Migrations completed successfully.');
   } catch (err) {

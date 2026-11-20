@@ -101,18 +101,22 @@ const addExpense = async (req, res, next) => {
     }
 
     const balanceInfo = await getCurrentTreasuryBalance(branch_id);
+    const expChannel = channel || 'cash';
+    const chBalance = Number(balanceInfo?.channels?.[expChannel] ?? balanceInfo?.total ?? 0);
+    const chNames = { cash: 'نقدي (كاش)', wallet: 'محفظة إلكترونية', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+    const chName = chNames[expChannel] || expChannel;
+
+    if (expenseAmount > chBalance) {
+      return sendError(
+        res,
+        `رصيد الخزينة المتاح في قناة (${chName}) هو ${chBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م، ولا يكفي لتغطية المصروف المطلوب (${expenseAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م). تم منع العملية لتفادي الأرصدة السالبة بالخزينة.`,
+        400
+      );
+    }
+
     const currentBalance = typeof balanceInfo === 'object' && balanceInfo !== null
       ? Number(balanceInfo.total || 0)
       : Number(balanceInfo || 0);
-
-    if (expenseAmount > currentBalance && !override_reason) {
-      return res.status(400).json({
-        success: false,
-        requiresOverride: true,
-        message: `رصيد الخزينة الحالي (${currentBalance.toFixed(2)}) غير كافٍ. يرجى كتابة سبب التجاوز للمتابعة.`
-      });
-    }
-
     const newBalance = currentBalance - expenseAmount;
 
     const result = await pool.query(
@@ -141,7 +145,7 @@ const updateExpense = async (req, res, next) => {
 
     const existing = await pool.query(`SELECT amount FROM expenses WHERE id = $1 AND branch_id = $2`, [id, branch_id]);
     if (existing.rows.length === 0) return sendError(res, 'المصروف غير موجود', 404);
-    
+
     let newAmount = Number(amount || 0);
     if (Array.isArray(items) && items.length > 0) {
       newAmount = items.reduce((s, it) => s + Number(it.amount || 0), 0);
@@ -151,19 +155,20 @@ const updateExpense = async (req, res, next) => {
     }
 
     const oldAmount = Number(existing.rows[0].amount);
-    
+
     if (newAmount > oldAmount) {
       const balanceInfo = await getCurrentTreasuryBalance(branch_id);
-      const currentBalance = typeof balanceInfo === 'object' && balanceInfo !== null
-        ? Number(balanceInfo.total || 0)
-        : Number(balanceInfo || 0);
+      const expChannel = channel || existing.rows[0].channel || 'cash';
+      const chBalance = Number(balanceInfo?.channels?.[expChannel] ?? balanceInfo?.total ?? 0);
       const diff = newAmount - oldAmount;
-      if (diff > currentBalance && !override_reason) {
-        return res.status(400).json({
-          success: false,
-          requiresOverride: true,
-          message: `تعديل المصروف بالزيادة يتطلب رصيد غير متاح (${diff.toFixed(2)}). يرجى كتابة سبب التجاوز.`
-        });
+      if (diff > chBalance) {
+        const chNames = { cash: 'نقدي (كاش)', wallet: 'محفظة إلكترونية', instapay: 'انستاباي', bank: 'إيداع بنكي' };
+        const chName = chNames[expChannel] || expChannel;
+        return sendError(
+          res,
+          `رصيد الخزينة المتاح في قناة (${chName}) هو ${chBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م، ولا يكفي لتغطية زيادة المصروف (${diff.toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م). تم منع العملية لتفادي الأرصدة السالبة بالخزينة.`,
+          400
+        );
       }
     }
 
@@ -215,7 +220,7 @@ const getUniqueValues = async (req, res, next) => {
     const branch_id = getEffectiveBranchId(req);
     const whereBranch = branch_id ? `WHERE branch_id = $1 AND` : `WHERE`;
     const params = branch_id ? [branch_id] : [];
-    
+
     const descRes = await pool.query(
       `SELECT DISTINCT description FROM expenses ${whereBranch} description IS NOT NULL AND description != '' ORDER BY description`,
       params

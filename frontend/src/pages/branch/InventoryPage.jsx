@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Edit, Trash2, Package, Plus, Eye, X, Upload,
   Scale, Layers, DollarSign, CheckCircle2, TrendingDown,
-  Warehouse, ClipboardList, Building2, ArrowDownToLine, Search
+  Warehouse, ClipboardList, Building2, ArrowDownToLine, Search,
+  FolderTree, Link2, Unlink2, Check, AlertCircle, ClipboardCheck
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
@@ -24,10 +26,19 @@ const EMPTY_FORM = {
   price_per_kg: '',
   notes: '',
   scale_ticket_image: null,
+  section_id: '',
+};
+
+const EMPTY_SECTION_FORM = {
+  name: '',
+  total_weight: '',
+  notes: '',
+  is_active: true,
 };
 
 const InventoryPage = () => {
-  const [activeTab, setActiveTab] = useState('stock'); // 'stock' | 'supplies'
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState('stock'); // 'stock' | 'supplies' | 'sections'
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
@@ -37,6 +48,17 @@ const InventoryPage = () => {
   const [supplies, setSupplies] = useState([]);
   const [suppliesLoading, setSuppliesLoading] = useState(false);
   const [suppliesSummary, setSuppliesSummary] = useState(null);
+
+  // Sections state
+  const [sections, setSections] = useState([]);
+  const [sectionsLoading, setSectionsLoading] = useState(false);
+  const [isSectionModalOpen, setIsSectionModalOpen] = useState(false);
+  const [editingSection, setEditingSection] = useState(null);
+  const [sectionFormData, setSectionFormData] = useState(EMPTY_SECTION_FORM);
+  const [isSectionConfirmOpen, setIsSectionConfirmOpen] = useState(false);
+  const [sectionToDelete, setSectionToDelete] = useState(null);
+  const [activeSectionForItems, setActiveSectionForItems] = useState(null);
+  const [isSectionItemsModalOpen, setIsSectionItemsModalOpen] = useState(false);
 
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -65,15 +87,29 @@ const InventoryPage = () => {
     }
   }, []);
 
+  const fetchSections = useCallback(async () => {
+    setSectionsLoading(true);
+    try {
+      const res = await inventoryService.getSections({ include_inactive: true });
+      setSections(res.data || []);
+    } catch (err) {
+      console.error(err);
+      toast.error('خطأ في جلب بيانات الأقسام');
+    } finally {
+      setSectionsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
+    fetchSections();
     inventoryService.getUniqueValues().then(res => {
       setUniqueValues({
         products: res.data?.products || [],
         companies: res.data?.companies || []
       });
     }).catch(console.error);
-  }, [fetchData]);
+  }, [fetchData, fetchSections]);
 
   // ─── Supply Log ─────────────────────────────────────────────────
   const fetchSupplies = useCallback(async (params = {}) => {
@@ -91,7 +127,99 @@ const InventoryPage = () => {
 
   useEffect(() => {
     if (activeTab === 'supplies') fetchSupplies();
-  }, [activeTab, fetchSupplies]);
+    if (activeTab === 'sections') fetchSections();
+  }, [activeTab, fetchSupplies, fetchSections]);
+
+  const handleOpenSectionModal = (sec = null) => {
+    if (sec) {
+      setEditingSection(sec);
+      setSectionFormData({
+        name: sec.name || '',
+        total_weight: sec.total_weight ?? '',
+        notes: sec.notes || '',
+        is_active: sec.is_active !== false
+      });
+    } else {
+      setEditingSection(null);
+      setSectionFormData(EMPTY_SECTION_FORM);
+    }
+    setIsSectionModalOpen(true);
+  };
+
+  const handleSectionSubmit = async (e) => {
+    e.preventDefault();
+    if (!sectionFormData.name.trim()) {
+      return toast.error('اسم القسم مطلوب');
+    }
+    setIsSubmitting(true);
+    try {
+      const payload = {
+        name: sectionFormData.name.trim(),
+        total_weight: Number(sectionFormData.total_weight || 0),
+        notes: sectionFormData.notes || '',
+        is_active: sectionFormData.is_active
+      };
+      if (editingSection) {
+        await inventoryService.updateSection(editingSection.id, payload);
+        toast.success('تم تحديث القسم بنجاح');
+      } else {
+        await inventoryService.createSection(payload);
+        toast.success('تم إضافة القسم بنجاح');
+      }
+      setIsSectionModalOpen(false);
+      fetchSections();
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'حدث خطأ أثناء حفظ القسم');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSectionDeleteClick = (id) => {
+    setSectionToDelete(id);
+    setIsSectionConfirmOpen(true);
+  };
+
+  const confirmSectionDelete = async () => {
+    if (!sectionToDelete) return;
+    try {
+      await inventoryService.deleteSection(sectionToDelete);
+      toast.success('تم حذف القسم بنجاح');
+      fetchSections();
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'تعذر حذف القسم');
+    } finally {
+      setIsSectionConfirmOpen(false);
+      setSectionToDelete(null);
+    }
+  };
+
+  const handleOpenSectionItems = async (sec) => {
+    try {
+      const res = await inventoryService.getSectionById(sec.id);
+      setActiveSectionForItems(res.data);
+      setIsSectionItemsModalOpen(true);
+    } catch (err) {
+      toast.error('تعذر جلب أصناف القسم');
+    }
+  };
+
+  const handleAssignItem = async (inventoryId, sectionId) => {
+    try {
+      await inventoryService.assignItemToSection({ inventory_id: inventoryId, section_id: sectionId });
+      toast.success('تم تحديث ربط الصنف');
+      if (activeSectionForItems) {
+        const res = await inventoryService.getSectionById(activeSectionForItems.id);
+        setActiveSectionForItems(res.data);
+      }
+      fetchSections();
+      fetchData();
+    } catch (err) {
+      toast.error('تعذر ربط الصنف');
+    }
+  };
 
   const handleOpenModal = (item = null) => {
     if (item) {
@@ -106,6 +234,7 @@ const InventoryPage = () => {
         price_per_kg: item.price_per_kg || '',
         notes: item.notes || '',
         scale_ticket_image: item.scale_ticket_image || null,
+        section_id: item.section_id || '',
       });
     } else {
       setEditingItem(null);
@@ -126,6 +255,7 @@ const InventoryPage = () => {
       price_per_kg: item.price_per_kg || '',
       notes: '',
       scale_ticket_image: null,
+      section_id: item.section_id || '',
     });
     setIsModalOpen(true);
   };
@@ -144,6 +274,7 @@ const InventoryPage = () => {
         count: Number(formData.count || 0),
         roll_price: Number(formData.roll_price || 0),
         price_per_kg: Number(formData.price_per_kg || 0),
+        section_id: formData.section_id || null,
       };
 
       if (editingItem) {
@@ -185,6 +316,21 @@ const InventoryPage = () => {
     { key: 'date', label: 'التاريخ', render: (row) => format(new Date(row.date), 'yyyy/MM/dd') },
     { key: 'company', label: 'الشركة', render: (row) => row.company || '—' },
     { key: 'product', label: 'الصنف / المنتج' },
+    {
+      key: 'section_name',
+      label: 'القسم',
+      render: (row) => row.section_name ? (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: '#f5f3ff', color: '#7c3aed', border: '1px solid #ddd6fe',
+          borderRadius: 6, padding: '2px 8px', fontSize: '0.8rem', fontWeight: 700
+        }}>
+          <FolderTree size={12} /> {row.section_name}
+        </span>
+      ) : (
+        <span style={{ color: '#94a3b8', fontSize: '0.8rem' }}>—</span>
+      )
+    },
     {
       key: 'weight_quantity',
       label: 'الوزن الكلي (كجم)',
@@ -416,12 +562,34 @@ const InventoryPage = () => {
             إدارة المخزون، الكميات المتاحة، والمنصرف من البضاعة لكل صنف
           </p>
         </div>
-        {activeTab === 'stock' && (
-          <button className="inv-add-btn" onClick={() => handleOpenModal()}>
-            <Plus size={18} />
-            إضافة صنف للمخزن
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button
+            className="inv-add-btn"
+            onClick={() => navigate('/branch/stocktaking')}
+            style={{
+              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+              boxShadow: '0 4px 12px rgba(5, 150, 105, 0.25)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6
+            }}
+          >
+            <ClipboardCheck size={18} />
+            جرد ومطابقة المخزن
           </button>
-        )}
+          {activeTab === 'stock' && (
+            <button className="inv-add-btn" onClick={() => handleOpenModal()}>
+              <Plus size={18} />
+              إضافة صنف للمخزن
+            </button>
+          )}
+          {activeTab === 'sections' && (
+            <button className="inv-add-btn" onClick={() => handleOpenSectionModal()} style={{ background: '#7c3aed' }}>
+              <Plus size={18} />
+              إضافة قسم جديد
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tab Switcher */}
@@ -439,6 +607,20 @@ const InventoryPage = () => {
           }}
         >
           <Package size={16} /> أرصدة المخزن
+        </button>
+        <button
+          onClick={() => setActiveTab('sections')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '8px 20px', borderRadius: 8, fontWeight: 700, fontSize: '0.9rem',
+            border: '2px solid',
+            borderColor: activeTab === 'sections' ? '#7c3aed' : '#e2e8f0',
+            background: activeTab === 'sections' ? '#7c3aed' : '#f8fafc',
+            color: activeTab === 'sections' ? '#fff' : '#475569',
+            cursor: 'pointer', transition: 'all 0.18s'
+          }}
+        >
+          <FolderTree size={16} /> أقسام المخزن
         </button>
         <button
           onClick={() => setActiveTab('supplies')}
@@ -590,6 +772,222 @@ const InventoryPage = () => {
         </div>
       )}
 
+      {/* ─── Sections Tab (أقسام المخزن) ─────────────────────────────────── */}
+      {activeTab === 'sections' && (
+        <div>
+          {/* Sections KPI Cards */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gap: 16, marginBottom: 24
+          }}>
+            <div style={{ background: 'var(--bg-card)', padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: '#f5f3ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <FolderTree size={22} color="#7c3aed" />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>إجمالي الأقسام</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)' }}>{sections.length} قسم</div>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--bg-card)', padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Scale size={22} color="#2563eb" />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>إجمالي الوزن المخصص</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#2563eb' }}>
+                  {fmt(sections.reduce((acc, s) => acc + Number(s.total_weight || 0), 0), 2)} كجم
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--bg-card)', padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <TrendingDown size={22} color="#dc2626" />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>إجمالي المنصرف (مبيعات)</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#dc2626' }}>
+                  {fmt(sections.reduce((acc, s) => acc + Number(s.issued_weight || 0), 0), 2)} كجم
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--bg-card)', padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: '#f0fdf4', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <CheckCircle2 size={22} color="#16a34a" />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>المتاح حالياً بالأقسام</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#16a34a' }}>
+                  {fmt(sections.reduce((acc, s) => acc + Number(s.available_weight || 0), 0), 2)} كجم
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Sections Table Container */}
+          <div style={{ background: '#fff', borderRadius: 14, border: '1.5px solid #e2e8f0', overflow: 'hidden', boxShadow: '0 2px 10px rgba(15,35,64,0.04)' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#1A3A5C', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <FolderTree size={18} color="#7c3aed" /> أقسام المخزن والأوزان الإجمالية
+                </h3>
+                <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: '#64748b' }}>
+                  كل قسم يحدد وزناً إجمالياً، وعند بيع أي صنف تابع للقسم يُخصم الوزن تلقائياً من رصيد القسم
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleOpenSectionModal()}
+                style={{
+                  background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 8,
+                  padding: '7px 16px', fontWeight: 700, fontSize: '0.85rem', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6
+                }}
+              >
+                <Plus size={16} /> إضافة قسم جديد
+              </button>
+            </div>
+
+            {sectionsLoading ? (
+              <div style={{ padding: 40, textAlign: 'center', color: '#64748b' }}>جاري تحميل الأقسام...</div>
+            ) : sections.length === 0 ? (
+              <div style={{ padding: '40px 20px', textAlign: 'center', color: '#64748b' }}>
+                <FolderTree size={36} color="#94a3b8" style={{ marginBottom: 10 }} />
+                <div style={{ fontWeight: 700, color: '#475569', marginBottom: 6 }}>لا توجد أقسام مسجلة بالمخزن بعد</div>
+                <div style={{ fontSize: '0.82rem', color: '#94a3b8', marginBottom: 14 }}>
+                  أضف قسماً (مثل: قطاع فضي) مع وزنه الإجمالي واربط به أصنافه الفرعية
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleOpenSectionModal()}
+                  style={{
+                    background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 8,
+                    padding: '8px 18px', fontWeight: 700, fontSize: '0.85rem', cursor: 'pointer'
+                  }}
+                >
+                  <Plus size={16} style={{ marginLeft: 4 }} /> إضافة أول قسم الآن
+                </button>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', borderBottom: '1.5px solid #e2e8f0', textAlign: 'right', color: '#475569', fontSize: '0.8rem', fontWeight: 700 }}>
+                      <th style={{ padding: '12px 16px' }}>اسم القسم</th>
+                      <th style={{ padding: '12px 16px' }}>الوزن الكلي (كجم)</th>
+                      <th style={{ padding: '12px 16px' }}>المنصرف (كجم)</th>
+                      <th style={{ padding: '12px 16px' }}>المتاح حالياً (كجم)</th>
+                      <th style={{ padding: '12px 16px', textAlign: 'center' }}>الأصناف التابعة</th>
+                      <th style={{ padding: '12px 16px', textAlign: 'center' }}>الحالة</th>
+                      <th style={{ padding: '12px 16px' }}>ملاحظات</th>
+                      <th style={{ padding: '12px 16px', textAlign: 'center' }}>إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sections.map((sec) => {
+                      const avail = Number(sec.available_weight ?? (sec.total_weight - sec.issued_weight));
+                      const isZero = avail <= 0;
+                      return (
+                        <tr
+                          key={sec.id}
+                          style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.15s' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#faf5ff'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                        >
+                          <td style={{ padding: '12px 16px', fontWeight: 800, color: '#1A3A5C' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <FolderTree size={15} color="#7c3aed" />
+                              {sec.name}
+                            </div>
+                          </td>
+                          <td style={{ padding: '12px 16px', fontWeight: 700 }}>
+                            {fmt(sec.total_weight, 2)} كجم
+                          </td>
+                          <td style={{ padding: '12px 16px', color: '#dc2626', fontWeight: 700 }}>
+                            {fmt(sec.issued_weight, 2)} كجم
+                          </td>
+                          <td style={{ padding: '12px 16px' }}>
+                            <span style={{
+                              display: 'inline-flex', alignItems: 'center', gap: 4,
+                              padding: '3px 10px', borderRadius: 6, fontWeight: 800, fontSize: '0.84rem',
+                              background: isZero ? '#fee2e2' : '#dcfce7',
+                              color: isZero ? '#dc2626' : '#15803d',
+                              border: `1px solid ${isZero ? '#fecaca' : '#bbf7d0'}`
+                            }}>
+                              {fmt(avail, 2)} كجم
+                              {isZero && <span style={{ fontSize: '0.72rem' }}>(نفذ)</span>}
+                            </span>
+                          </td>
+                          <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenSectionItems(sec)}
+                              style={{
+                                background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe',
+                                borderRadius: 6, padding: '3px 10px', fontSize: '0.78rem',
+                                fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5
+                              }}
+                              title="إدارة الأصناف المربوطة بهذا القسم"
+                            >
+                              <Layers size={13} /> {sec.items_count || 0} صنف
+                            </button>
+                          </td>
+                          <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                            <span style={{
+                              background: sec.is_active ? '#dcfce7' : '#fee2e2',
+                              color: sec.is_active ? '#166534' : '#991b1b',
+                              padding: '2px 8px', borderRadius: 4, fontSize: '0.75rem', fontWeight: 700
+                            }}>
+                              {sec.is_active ? 'نشط' : 'معطل'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '12px 16px', color: '#64748b', fontSize: '0.82rem' }}>
+                            {sec.notes || '—'}
+                          </td>
+                          <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                            <div style={{ display: 'inline-flex', gap: 6 }}>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenSectionItems(sec)}
+                                className="btn btn-icon btn-ghost"
+                                style={{ color: '#2563eb' }}
+                                title="ربط وإدارة الأصناف"
+                              >
+                                <Link2 size={16} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenSectionModal(sec)}
+                                className="btn btn-icon btn-ghost"
+                                title="تعديل القسم"
+                              >
+                                <Edit size={16} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSectionDeleteClick(sec.id)}
+                                className="btn btn-icon btn-ghost"
+                                style={{ color: '#dc2626' }}
+                                title="حذف القسم"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Add / Edit Inventory Modal */}
       <Modal
         isOpen={isModalOpen}
@@ -630,6 +1028,22 @@ const InventoryPage = () => {
                 required
               />
             </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">القسم التابع له هذا الصنف (اختياري)</label>
+            <select
+              className="form-input"
+              value={formData.section_id || ''}
+              onChange={(e) => setFormData({ ...formData, section_id: e.target.value })}
+            >
+              <option value="">-- بدون قسم (صنف مستقل) --</option>
+              {sections.map(s => (
+                <option key={s.id} value={s.id}>
+                  {s.name} (متاح بالقسم: {fmt(s.available_weight)} كجم)
+                </option>
+              ))}
+            </select>
           </div>
 
           <div style={{ display: 'flex', gap: '16px' }}>
@@ -800,6 +1214,229 @@ const InventoryPage = () => {
           </div>
         </Modal>
       )}
+
+      {/* ─── Add / Edit Section Modal ────────────────────────────────────── */}
+      <Modal
+        isOpen={isSectionModalOpen}
+        onClose={() => setIsSectionModalOpen(false)}
+        title={editingSection ? 'تعديل بيانات القسم' : 'إضافة قسم جديد بالمخزن'}
+      >
+        <form onSubmit={handleSectionSubmit}>
+          <div className="form-group">
+            <label className="form-label">اسم القسم *</label>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="مثال: قطاع فضي، قطاع ملون، قطاع جامبو..."
+              value={sectionFormData.name}
+              onChange={(e) => setSectionFormData({ ...sectionFormData, name: e.target.value })}
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">الوزن الإجمالي للقسم (كجم) *</label>
+            <input
+              type="number"
+              step="0.001"
+              min="0"
+              className="form-input"
+              placeholder="إجمالي وزن هذا القسم بالكيلوجرام"
+              value={sectionFormData.total_weight}
+              onChange={(e) => setSectionFormData({ ...sectionFormData, total_weight: e.target.value })}
+              required
+            />
+            {editingSection && (
+              <span style={{ fontSize: '0.76rem', color: '#64748b', marginTop: 4, display: 'block' }}>
+                ملاحظة: تم صرف {fmt(editingSection.issued_weight)} كجم بالفعل، لا يمكن وضع وزن أقل من هذا المنصرف.
+              </span>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">ملاحظات</label>
+            <textarea
+              className="form-textarea"
+              rows="2"
+              placeholder="أي ملاحظات حول هذا القسم ومواصفاته..."
+              value={sectionFormData.notes}
+              onChange={(e) => setSectionFormData({ ...sectionFormData, notes: e.target.value })}
+            />
+          </div>
+
+          <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              id="sec-active"
+              checked={sectionFormData.is_active}
+              onChange={(e) => setSectionFormData({ ...sectionFormData, is_active: e.target.checked })}
+              style={{ width: 16, height: 16, cursor: 'pointer' }}
+            />
+            <label htmlFor="sec-active" style={{ fontSize: '0.84rem', fontWeight: 700, color: '#1A3A5C', cursor: 'pointer' }}>
+              القسم نشط ومتاح للبيع منه
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
+            <button type="submit" className="btn btn-primary" style={{ flex: 1, background: '#7c3aed' }} disabled={isSubmitting}>
+              {isSubmitting ? 'جاري الحفظ...' : (editingSection ? 'تحديث القسم' : 'حفظ القسم')}
+            </button>
+            <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setIsSectionModalOpen(false)}>
+              إلغاء
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ─── Manage Section Items Modal ─────────────────────────────────── */}
+      {isSectionItemsModalOpen && activeSectionForItems && (
+        <Modal
+          isOpen={isSectionItemsModalOpen}
+          onClose={() => {
+            setIsSectionItemsModalOpen(false);
+            setActiveSectionForItems(null);
+          }}
+          title={`أصناف قسم: ${activeSectionForItems.name}`}
+        >
+          <div style={{ padding: '4px 0' }}>
+            {/* Header info bar */}
+            <div style={{
+              background: '#f5f3ff', border: '1.5px solid #ddd6fe', borderRadius: 10,
+              padding: '12px 16px', marginBottom: 18, display: 'flex', gap: 20, flexWrap: 'wrap'
+            }}>
+              <div>
+                <span style={{ fontSize: '0.74rem', color: '#6b21a8', display: 'block' }}>الوزن الكلي</span>
+                <strong style={{ fontSize: '1rem', color: '#7c3aed' }}>{fmt(activeSectionForItems.total_weight)} كجم</strong>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.74rem', color: '#6b21a8', display: 'block' }}>المنصرف</span>
+                <strong style={{ fontSize: '1rem', color: '#dc2626' }}>{fmt(activeSectionForItems.issued_weight)} كجم</strong>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.74rem', color: '#6b21a8', display: 'block' }}>المتاح حالياً</span>
+                <strong style={{ fontSize: '1rem', color: '#16a34a' }}>{fmt(activeSectionForItems.available_weight)} كجم</strong>
+              </div>
+            </div>
+
+            {/* List of items currently assigned */}
+            <h4 style={{ margin: '0 0 10px', fontSize: '0.9rem', color: '#1A3A5C', fontWeight: 800 }}>
+              الأصناف المندرجة تحت هذا القسم ({activeSectionForItems.items?.length || 0}):
+            </h4>
+
+            {(!activeSectionForItems.items || activeSectionForItems.items.length === 0) ? (
+              <div style={{ padding: 18, textAlign: 'center', background: '#f8fafc', borderRadius: 8, color: '#64748b', fontSize: '0.84rem' }}>
+                لا توجد أصناف مربوطة بهذا القسم حالياً. يمكنك ربط أصناف المخزن من القائمة أدناه.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 18 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', textAlign: 'right', color: '#475569' }}>
+                      <th style={{ padding: '8px 10px' }}>الصنف</th>
+                      <th style={{ padding: '8px 10px' }}>الشركة</th>
+                      <th style={{ padding: '8px 10px' }}>الوزن المتاح</th>
+                      <th style={{ padding: '8px 10px' }}>اللفات</th>
+                      <th style={{ padding: '8px 10px', textAlign: 'center' }}>إجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeSectionForItems.items.map((it) => (
+                      <tr key={it.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '8px 10px', fontWeight: 700, color: '#1A3A5C' }}>{it.product}</td>
+                        <td style={{ padding: '8px 10px', color: '#64748b' }}>{it.company || '—'}</td>
+                        <td style={{ padding: '8px 10px', fontWeight: 600 }}>{fmt(it.available_quantity)} كجم</td>
+                        <td style={{ padding: '8px 10px' }}>{it.available_rolls || 0} لفة</td>
+                        <td style={{ padding: '8px 10px', textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            onClick={() => handleAssignItem(it.id, null)}
+                            style={{
+                              background: '#fee2e2', color: '#dc2626', border: 'none',
+                              borderRadius: 4, padding: '3px 8px', fontSize: '0.74rem',
+                              cursor: 'pointer', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4
+                            }}
+                            title="إلغاء ربط الصنف من هذا القسم"
+                          >
+                            <Unlink2 size={12} /> إلغاء الربط
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Link another item from inventory */}
+            <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, border: '1px dashed #cbd5e1', marginTop: 14 }}>
+              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#334155', marginBottom: 8 }}>
+                ➕ ربط صنف من المخزن بهذا القسم:
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <select
+                  id="assign-inv-select"
+                  className="form-input"
+                  style={{ flex: 1, fontSize: '0.82rem' }}
+                  defaultValue=""
+                >
+                  <option value="">-- اختر صنفاً لربطه بالقسم --</option>
+                  {inventory
+                    .filter(inv => !activeSectionForItems.items?.some(it => it.id === inv.id))
+                    .map(inv => (
+                      <option key={inv.id} value={inv.id}>
+                        {inv.product} {inv.company ? `(${inv.company})` : ''} — متاح: {fmt(inv.remaining_weight || inv.available_quantity)} كجم {inv.section_name ? `[مربوط بـ: ${inv.section_name}]` : ''}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sel = document.getElementById('assign-inv-select');
+                    if (sel && sel.value) {
+                      handleAssignItem(sel.value, activeSectionForItems.id);
+                      sel.value = '';
+                    } else {
+                      toast.error('يرجى اختيار صنف أولاً');
+                    }
+                  }}
+                  style={{
+                    background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 8,
+                    padding: '7px 16px', fontWeight: 700, fontSize: '0.82rem', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 6
+                  }}
+                >
+                  <Link2 size={14} /> ربط الآن
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 20, textAlign: 'left' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  setIsSectionItemsModalOpen(false);
+                  setActiveSectionForItems(null);
+                }}
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ─── Confirm Section Delete Modal ───────────────────────────────── */}
+      <ConfirmModal
+        isOpen={isSectionConfirmOpen}
+        onClose={() => {
+          setIsSectionConfirmOpen(false);
+          setSectionToDelete(null);
+        }}
+        onConfirm={confirmSectionDelete}
+        title="تأكيد حذف القسم"
+        message="هل أنت متأكد من حذف هذا القسم؟ سيتم إلغاء ربط كافة الأصناف التابعة له (ولن يتم حذف الأصناف نفسها من المخزن)."
+      />
     </div>
   );
 };

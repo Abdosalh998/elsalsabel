@@ -71,6 +71,7 @@ const CustodyPage = () => {
 
   // Transfer Modal State
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [editingTransfer, setEditingTransfer] = useState(null);
   const [transferForm, setTransferForm] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
     from_person: '',
@@ -250,6 +251,10 @@ const CustodyPage = () => {
       setIsModalOpen(false);
       fetchData();
       fetchPersons();
+      fetchTransfers();
+      if (statementModalOpen && selectedStatement?.person_name) {
+        handleOpenStatement(selectedStatement.person_name);
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || 'حدث خطأ أثناء حفظ الحركة');
     } finally {
@@ -334,15 +339,28 @@ const CustodyPage = () => {
   };
 
   // Open Transfer Modal
-  const handleOpenTransferModal = (fromPerson = '') => {
-    setTransferForm({
-      date: format(new Date(), 'yyyy-MM-dd'),
-      from_person: fromPerson || '',
-      to_person: '',
-      amount: '',
-      receipt_number: '',
-      notes: '',
-    });
+  const handleOpenTransferModal = (transferItem = null, fromPerson = '') => {
+    if (transferItem && transferItem.id) {
+      setEditingTransfer(transferItem);
+      setTransferForm({
+        date: transferItem.date ? format(new Date(transferItem.date), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+        from_person: transferItem.from_person || '',
+        to_person: transferItem.to_person || '',
+        amount: transferItem.amount || '',
+        receipt_number: transferItem.receipt_number || '',
+        notes: transferItem.notes || '',
+      });
+    } else {
+      setEditingTransfer(null);
+      setTransferForm({
+        date: format(new Date(), 'yyyy-MM-dd'),
+        from_person: fromPerson || '',
+        to_person: '',
+        amount: '',
+        receipt_number: '',
+        notes: '',
+      });
+    }
     setIsTransferModalOpen(true);
   };
 
@@ -360,17 +378,29 @@ const CustodyPage = () => {
 
     setIsSubmitting(true);
     try {
-      await custodyService.addCustodyTransfer({
-        ...transferForm,
-        amount: parseFloat(transferForm.amount),
-      });
-      toast.success('تم تحويل العهدة بنجاح');
+      if (editingTransfer) {
+        await custodyService.updateCustodyTransfer(editingTransfer.id, {
+          ...transferForm,
+          amount: parseFloat(transferForm.amount),
+        });
+        toast.success('تم تحديث حركة التحويل والمبلغ بنجاح');
+      } else {
+        await custodyService.addCustodyTransfer({
+          ...transferForm,
+          amount: parseFloat(transferForm.amount),
+        });
+        toast.success('تم تحويل العهدة بنجاح');
+      }
       setIsTransferModalOpen(false);
+      setEditingTransfer(null);
       fetchData();
       fetchPersons();
       fetchTransfers();
+      if (statementModalOpen && selectedStatement?.person_name) {
+        handleOpenStatement(selectedStatement.person_name);
+      }
     } catch (err) {
-      toast.error(err.response?.data?.message || 'حدث خطأ أثناء تحويل العهدة');
+      toast.error(err.response?.data?.message || 'حدث خطأ أثناء حفظ التحويل');
     } finally {
       setIsSubmitting(false);
     }
@@ -825,6 +855,21 @@ const CustodyPage = () => {
 
   const renderTransferActions = (row) => (
     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <button
+        type="button"
+        onClick={() => handleOpenTransferModal(row)}
+        title="تعديل حركة التحويل والمبلغ"
+        style={{
+          background: '#eff6ff',
+          color: '#2563eb',
+          border: '1px solid #bfdbfe',
+          borderRadius: 6,
+          padding: '5px 8px',
+          cursor: 'pointer',
+        }}
+      >
+        <Edit size={14} />
+      </button>
       <button
         type="button"
         onClick={() => handleDeleteTransfer(row)}
@@ -1617,6 +1662,28 @@ const CustodyPage = () => {
         }
       >
         <form onSubmit={handleSubmit}>
+          {/* Transfer Notice if editing a transfer leg */}
+          {editingItem?.transfer_id && (
+            <div
+              style={{
+                background: '#eff6ff',
+                color: '#1e40af',
+                border: '1px solid #bfdbfe',
+                borderRadius: 8,
+                padding: '8px 12px',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                marginBottom: 14,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+            >
+              <ArrowLeftRight size={15} />
+              <span>تنبيه: هذه الحركة جزء من تحويل عهدة بين شخصين. تعديل المبلغ هنا سيحدّث طرفي التحويل وسجل التحويلات تلقائياً.</span>
+            </div>
+          )}
+
           {/* Movement Type Toggle (if adding) */}
           {!editingItem && (
             <div
@@ -1960,7 +2027,7 @@ const CustodyPage = () => {
                     <th style={{ padding: '10px 12px' }}>الرصيد التراكمي</th>
                     <th style={{ padding: '10px 12px' }}>طريقة الدفع</th>
                     <th style={{ padding: '10px 12px' }}>ملاحظات</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'center' }}>السند</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'center' }}>الإجراءات</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2001,26 +2068,48 @@ const CustodyPage = () => {
                         {tx.notes || '-'}
                       </td>
                       <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                        <button
-                          type="button"
-                          onClick={() => handlePrintVoucher({ ...tx, person_name: selectedStatement.person_name, phone: selectedStatement.phone })}
-                          title="طباعة سند هذه الحركة"
-                          style={{
-                            background: tx.type === 'disbursement' ? '#fff7ed' : '#f0fdf4',
-                            color: tx.type === 'disbursement' ? '#ea580c' : '#16a34a',
-                            border: `1px solid ${tx.type === 'disbursement' ? '#fed7aa' : '#bbf7d0'}`,
-                            borderRadius: 6,
-                            padding: '4px 8px',
-                            cursor: 'pointer',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 3,
-                            fontSize: '0.74rem',
-                            fontWeight: 700,
-                          }}
-                        >
-                          <Printer size={12} /> سند
-                        </button>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditModal({ ...tx, person_name: selectedStatement.person_name, phone: selectedStatement.phone || tx.phone })}
+                            title="تعديل حركة العهدة والمبلغ"
+                            style={{
+                              background: '#eff6ff',
+                              color: '#2563eb',
+                              border: '1px solid #bfdbfe',
+                              borderRadius: 6,
+                              padding: '4px 8px',
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontSize: '0.74rem',
+                              fontWeight: 700,
+                            }}
+                          >
+                            <Edit size={12} /> تعديل
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handlePrintVoucher({ ...tx, person_name: selectedStatement.person_name, phone: selectedStatement.phone })}
+                            title="طباعة سند هذه الحركة"
+                            style={{
+                              background: tx.type === 'disbursement' ? '#fff7ed' : '#f0fdf4',
+                              color: tx.type === 'disbursement' ? '#ea580c' : '#16a34a',
+                              border: `1px solid ${tx.type === 'disbursement' ? '#fed7aa' : '#bbf7d0'}`,
+                              borderRadius: 6,
+                              padding: '4px 8px',
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontSize: '0.74rem',
+                              fontWeight: 700,
+                            }}
+                          >
+                            <Printer size={12} /> سند
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -2355,8 +2444,11 @@ const CustodyPage = () => {
       {/* ===================== MODAL: CUSTODY TRANSFER (تحويل عهدة) ===================== */}
       <Modal
         isOpen={isTransferModalOpen}
-        onClose={() => setIsTransferModalOpen(false)}
-        title="تحويل عهدة بين الأفراد"
+        onClose={() => {
+          setIsTransferModalOpen(false);
+          setEditingTransfer(null);
+        }}
+        title={editingTransfer ? 'تعديل حركة تحويل عهدة' : 'تحويل عهدة بين الأفراد'}
       >
         {(() => {
           const currentFromPerson = persons.find(
@@ -2597,7 +2689,13 @@ const CustodyPage = () => {
                   }}
                 >
                   <ArrowLeftRight size={16} />
-                  <span>{isSubmitting ? 'جاري التحويل...' : 'تأكيد تحويل العهدة'}</span>
+                  <span>
+                    {isSubmitting
+                      ? 'جاري الحفظ...'
+                      : editingTransfer
+                        ? 'تأكيد تعديل التحويل'
+                        : 'تأكيد تحويل العهدة'}
+                  </span>
                 </button>
               </div>
             </form>
