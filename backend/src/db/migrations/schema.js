@@ -615,7 +615,7 @@ async function runMigrations() {
         title                   VARCHAR(200) NOT NULL,
         type                    VARCHAR(20) NOT NULL DEFAULT 'full' CHECK (type IN ('full', 'section')),
         section_id              INTEGER REFERENCES inventory_sections(id) ON DELETE SET NULL,
-        status                  VARCHAR(20) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'in_progress', 'settled')),
+        status                  VARCHAR(20) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'in_progress', 'completed', 'settled', 'cancelled')),
         auditor_name            VARCHAR(150),
         notes                   TEXT,
         total_items_counted     INTEGER DEFAULT 0,
@@ -625,12 +625,19 @@ async function runMigrations() {
         total_rolls_diff        INTEGER DEFAULT 0,
         total_financial_diff    NUMERIC(15,2) DEFAULT 0,
         settled_at              TIMESTAMPTZ,
+        settled_by              INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at              TIMESTAMPTZ DEFAULT NOW(),
         updated_at              TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_stocktakes_branch ON stocktakes(branch_id);
       CREATE INDEX IF NOT EXISTS idx_stocktakes_date ON stocktakes(branch_id, date);
       CREATE INDEX IF NOT EXISTS idx_stocktakes_status ON stocktakes(branch_id, status);
+
+      -- تأكيد وجود الأعمدة في حالة إنشاء الجدول مسبقاً (Production Migration Fix)
+      ALTER TABLE stocktakes ADD COLUMN IF NOT EXISTS settled_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE stocktakes ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
+      ALTER TABLE stocktakes DROP CONSTRAINT IF EXISTS stocktakes_status_check;
+      ALTER TABLE stocktakes ADD CONSTRAINT stocktakes_status_check CHECK (status IN ('draft', 'in_progress', 'completed', 'settled', 'cancelled'));
 
       -- جدول بنود الجرد التفصيلية (stocktake_items)
       CREATE TABLE IF NOT EXISTS stocktake_items (
@@ -650,12 +657,14 @@ async function runMigrations() {
         rolls_diff        INTEGER DEFAULT 0,
         financial_diff    NUMERIC(15,2) DEFAULT 0,
         notes             TEXT,
+        is_settled        BOOLEAN DEFAULT false,
         created_at        TIMESTAMPTZ DEFAULT NOW(),
         updated_at        TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_stocktake_items_stocktake ON stocktake_items(stocktake_id);
       CREATE INDEX IF NOT EXISTS idx_stocktake_items_branch ON stocktake_items(branch_id);
       CREATE INDEX IF NOT EXISTS idx_stocktake_items_inventory ON stocktake_items(inventory_id);
+      ALTER TABLE stocktake_items ADD COLUMN IF NOT EXISTS is_settled BOOLEAN DEFAULT false;
     `).catch((e) => { console.error('Phase 15 (Stocktaking) migration error:', e.message); });
 
     console.log('✅ Migrations completed successfully.');
