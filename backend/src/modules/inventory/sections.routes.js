@@ -8,6 +8,7 @@ const {
   deleteSection,
   assignItemToSection,
   getSectionsWithItems,
+  addWeightToSection,
 } = require('./sections.controller');
 const { authenticate } = require('../../middleware/auth');
 
@@ -17,6 +18,7 @@ router.get('/with-items', getSectionsWithItems);
 router.get('/', getSections);
 router.get('/:id', getSectionById);
 router.post('/', createSection);
+router.post('/:id/add-weight', addWeightToSection);
 router.put('/:id', updateSection);
 router.delete('/:id', deleteSection);
 router.post('/assign', assignItemToSection);

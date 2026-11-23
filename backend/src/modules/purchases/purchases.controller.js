@@ -34,7 +34,7 @@ const getPurchases = async (req, res, next) => {
       else { where += ` AND p.product = ANY($${idx}::text[])`; params.push(prods); idx++; }
     }
 
-    if (dateFrom && dateTo) { where += ` AND p.date BETWEEN $${idx} AND $${idx+1}`; params.push(dateFrom, dateTo); idx += 2; }
+    if (dateFrom && dateTo) { where += ` AND p.date BETWEEN $${idx} AND $${idx + 1}`; params.push(dateFrom, dateTo); idx += 2; }
     else if (dateFrom) { where += ` AND p.date >= $${idx}`; params.push(dateFrom); idx++; }
     else if (dateTo) { where += ` AND p.date <= $${idx}`; params.push(dateTo); idx++; }
 
@@ -52,7 +52,7 @@ const getPurchases = async (req, res, next) => {
       LEFT JOIN inventory inv ON inv.id = p.inventory_id
       ${where}
       ORDER BY p.date DESC, p.id DESC
-      LIMIT $${idx} OFFSET $${idx+1}
+      LIMIT $${idx} OFFSET $${idx + 1}
     `;
     params.push(limit, offset);
 
@@ -115,15 +115,15 @@ const addPurchase = async (req, res, next) => {
     if (!date || !product || !total) throw new Error('التاريخ، المنتج، والمبلغ الإجمالي مطلوبة');
 
     const effWeight = Number(weight_quantity || req.body.quantity || 0);
-    const effCount  = Number(count || req.body.inventory_count || 0);
+    const effCount = Number(count || req.body.inventory_count || 0);
     const effCompany = company || req.body.inventory_company || '';
 
     // ── Derive price fields ──────────────────────────────────────────────
-    const pTon  = Number(price_per_ton);
-    let   pKg   = Number(price_per_kg);
-    let   pRoll = Number(roll_price || req.body.inventory_roll_price || 0);
+    const pTon = Number(price_per_ton);
+    let pKg = Number(price_per_kg);
+    let pRoll = Number(roll_price || req.body.inventory_roll_price || 0);
 
-    if (pTon > 0 && pKg === 0)   pKg   = pTon / 1000;
+    if (pTon > 0 && pKg === 0) pKg = pTon / 1000;
     if (pTon > 0 && pRoll === 0 && effWeight > 0 && effCount > 0) {
       pRoll = (effWeight / effCount) * pKg;
     }
@@ -138,9 +138,9 @@ const addPurchase = async (req, res, next) => {
       customer_id = custRes.rows[0].id;
     }
     const finalCustomerId = customer_id || null;
-    const invoiceTotal    = Number(total);
+    const invoiceTotal = Number(total);
     const applyDebtOffset = apply_debt_offset === true || apply_debt_offset === 'true';
-    const addToInventory  = add_to_inventory === true || add_to_inventory === 'true';
+    const addToInventory = add_to_inventory === true || add_to_inventory === 'true';
 
     // ── Treasury / credit / debt-offset logic ───────────────────────────
     let credit_used = 0, debt_offset = 0, treasury_paid = invoiceTotal;
@@ -297,10 +297,10 @@ const transferPurchaseToInventory = async (req, res, next) => {
       return sendError(res, 'هذه الفاتورة تم ترحيلها للمخزن مسبقاً', 400);
     }
 
-    const pKg   = Number(p.price_per_kg);
+    const pKg = Number(p.price_per_kg);
     const pRoll = Number(p.roll_price);
     const invWeight = Number(p.weight_quantity || p.quantity_after_discount || p.quantity || 0);
-    const invCount  = Number(p.count || 0);
+    const invCount = Number(p.count || 0);
 
     const inventoryId = await _stockInventory(client, {
       branch_id,
@@ -360,12 +360,12 @@ async function _stockInventory(client, { branch_id, date, product, company, weig
 
   let inventoryId;
   if (existingInv.rows.length > 0) {
-    const cur       = existingInv.rows[0];
-    const newCount  = Number(cur.count) + count;
+    const cur = existingInv.rows[0];
+    const newCount = Number(cur.count) + count;
     const newWeight = Number(cur.weight_quantity) + weight_quantity;
     const effectiveRollPrice = pRoll || Number(cur.roll_price) || 0;
     const effectivePricePerKg = pKg || Number(cur.price_per_kg) || 0;
-    const newTotal  = newCount > 0 ? newCount * effectiveRollPrice : newWeight * effectivePricePerKg;
+    const newTotal = newCount > 0 ? newCount * effectiveRollPrice : newWeight * effectivePricePerKg;
 
     const updInv = await client.query(
       `UPDATE inventory
@@ -380,7 +380,7 @@ async function _stockInventory(client, { branch_id, date, product, company, weig
       `INSERT INTO inventory (branch_id, date, company, product, weight_quantity, count, roll_price, price_per_kg, total, notes, scale_ticket_image)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
       [branch_id, date, invCompany, invProduct, weight_quantity, count, pRoll, pKg, totalValue,
-       `وارد من فاتورة مشتريات #${purchaseId}`, scale_ticket_image || null]
+        `وارد من فاتورة مشتريات #${purchaseId}`, scale_ticket_image || null]
     );
     inventoryId = insInv.rows[0].id;
   }
@@ -411,18 +411,18 @@ const updatePurchase = async (req, res, next) => {
     );
     if (oldRes.rows.length === 0) throw new Error('المشتريات غير موجودة');
 
-    const pTon  = Number(price_per_ton);
-    let   pKg   = Number(price_per_kg);
-    let   pRoll = Number(roll_price);
+    const pTon = Number(price_per_ton);
+    let pKg = Number(price_per_kg);
+    let pRoll = Number(roll_price);
     if (pTon > 0 && pKg === 0) pKg = pTon / 1000;
     if (pTon > 0 && pRoll === 0 && Number(weight_quantity) > 0 && Number(count) > 0) {
       pRoll = (Number(weight_quantity) / Number(count)) * pKg;
     }
 
     const invoiceTotal = Number(total);
-    const oldCredit    = Number(oldRes.rows[0].credit_used);
-    const oldTreasury  = Number(oldRes.rows[0].treasury_balance || 0);
-    const newTreasury  = Math.max(0, invoiceTotal - oldCredit);
+    const oldCredit = Number(oldRes.rows[0].credit_used);
+    const oldTreasury = Number(oldRes.rows[0].treasury_balance || 0);
+    const newTreasury = Math.max(0, invoiceTotal - oldCredit);
 
     // ── Check treasury liquidity on increase ─────────────────────────────
     if (newTreasury > oldTreasury) {
@@ -458,11 +458,11 @@ const updatePurchase = async (req, res, next) => {
            updated_at=NOW()
        WHERE id=$14 RETURNING *`,
       [date, product, company,
-       Number(weight_quantity), Number(count), pRoll, pKg, pTon,
-       Number(discount), qtyAfterDisc,
-       invoiceTotal, newTreasury, notes, id,
-       channel || null, receipt_image || null, scale_ticket_image || null,
-       material_type || null, image_url || null]
+        Number(weight_quantity), Number(count), pRoll, pKg, pTon,
+        Number(discount), qtyAfterDisc,
+        invoiceTotal, newTreasury, notes, id,
+        channel || null, receipt_image || null, scale_ticket_image || null,
+        material_type || null, image_url || null]
     );
 
     await client.query(
@@ -479,11 +479,11 @@ const updatePurchase = async (req, res, next) => {
         `SELECT issued_quantity, issued_rolls FROM inventory WHERE id=$1 FOR UPDATE`, [invId]
       );
       if (invRes.rows.length > 0) {
-        const issuedQty   = Number(invRes.rows[0].issued_quantity);
+        const issuedQty = Number(invRes.rows[0].issued_quantity);
         const issuedRolls = Number(invRes.rows[0].issued_rolls);
-        const newCount  = Math.max(Number(count), issuedRolls);
+        const newCount = Math.max(Number(count), issuedRolls);
         const newWeight = Math.max(Number(weight_quantity), issuedQty);
-        const newTotal  = newCount > 0 ? newCount * pRoll : newWeight * pKg;
+        const newTotal = newCount > 0 ? newCount * pRoll : newWeight * pKg;
         await client.query(
           `UPDATE inventory
            SET date=$1, company=$2, product=$3, weight_quantity=$4, count=$5,
@@ -525,13 +525,13 @@ const updatePurchasePrice = async (req, res, next) => {
     );
     if (purRes.rows.length === 0) throw new Error('الفاتورة غير موجودة');
 
-    const p     = purRes.rows[0];
-    const pTon  = Number(price_per_ton);
-    const pKg   = pTon / 1000;
+    const p = purRes.rows[0];
+    const pTon = Number(price_per_ton);
+    const pKg = pTon / 1000;
     const pRoll = Number(p.weight_quantity) > 0 && Number(p.count) > 0
       ? (Number(p.weight_quantity) / Number(p.count)) * pKg
       : 0;
-    const newTotal    = Number(p.count) > 0 ? Number(p.count) * pRoll : Number(p.weight_quantity) * pKg;
+    const newTotal = Number(p.count) > 0 ? Number(p.count) * pRoll : Number(p.weight_quantity) * pKg;
     const newTreasury = Math.max(0, newTotal - Number(p.credit_used));
 
     await client.query(
@@ -555,7 +555,7 @@ const updatePurchasePrice = async (req, res, next) => {
     );
 
     await client.query('COMMIT');
-    return sendSuccess(res, { price_per_ton: pTon, price_per_kg: pKg, roll_price: pRoll, new_total: newTotal }, 200, 'تم تحديث سعر الطن بنجاح');
+    return sendSuccess(res, { price_per_ton: pTon, price_per_kg: pKg, roll_price: pRoll, new_total: newTotal }, 200, 'تم تحديث سعر الوزن بنجاح');
   } catch (err) {
     await client.query('ROLLBACK');
     next(err);
@@ -579,7 +579,7 @@ const deletePurchase = async (req, res, next) => {
     );
     if (purRes.rows.length === 0) throw new Error('المشتريات غير موجودة');
 
-    const invId        = purRes.rows[0].inventory_id;
+    const invId = purRes.rows[0].inventory_id;
     const wasTransferred = purRes.rows[0].transferred_to_inventory;
 
     if (invId && wasTransferred) {
@@ -587,7 +587,7 @@ const deletePurchase = async (req, res, next) => {
         `SELECT issued_quantity, issued_rolls FROM inventory WHERE id=$1`, [invId]
       );
       if (invCheck.rows.length > 0) {
-        const issuedQty   = Number(invCheck.rows[0].issued_quantity);
+        const issuedQty = Number(invCheck.rows[0].issued_quantity);
         const issuedRolls = Number(invCheck.rows[0].issued_rolls);
         if (issuedQty > 0 || issuedRolls > 0) {
           return sendError(res, 'لا يمكن حذف الفاتورة لأن كميات من هذا المخزن تم بيعها بالفعل', 400);
@@ -638,7 +638,7 @@ const getUniqueValues = async (req, res, next) => {
       params
     );
     return sendSuccess(res, {
-      products:  productsRes.rows.map(r => r.product),
+      products: productsRes.rows.map(r => r.product),
       companies: companiesRes.rows.map(r => r.company),
     });
   } catch (err) {

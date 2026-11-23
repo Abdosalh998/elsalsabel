@@ -60,6 +60,15 @@ const InventoryPage = () => {
   const [activeSectionForItems, setActiveSectionForItems] = useState(null);
   const [isSectionItemsModalOpen, setIsSectionItemsModalOpen] = useState(false);
 
+  // Add Weight to Section Modal State
+  const [addWeightModal, setAddWeightModal] = useState({
+    isOpen: false,
+    section: null,
+    addedWeight: '',
+    notes: '',
+    isSubmitting: false,
+  });
+
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
@@ -218,6 +227,39 @@ const InventoryPage = () => {
       fetchData();
     } catch (err) {
       toast.error('تعذر ربط الصنف');
+    }
+  };
+
+  const handleOpenAddWeightModal = (sec) => {
+    setAddWeightModal({
+      isOpen: true,
+      section: sec,
+      addedWeight: '',
+      notes: '',
+      isSubmitting: false,
+    });
+  };
+
+  const handleSaveAddWeight = async (e) => {
+    e.preventDefault();
+    const w = parseFloat(addWeightModal.addedWeight);
+    if (isNaN(w) || w <= 0) {
+      toast.error('يرجى إدخال وزن صحيح أكبر من الصفر');
+      return;
+    }
+    setAddWeightModal(p => ({ ...p, isSubmitting: true }));
+    try {
+      await inventoryService.addSectionWeight(addWeightModal.section.id, {
+        added_weight: w,
+        notes: addWeightModal.notes,
+      });
+      toast.success(`تمت إضافة ${w} كجم لرصيد القسم بنجاح`);
+      setAddWeightModal({ isOpen: false, section: null, addedWeight: '', notes: '', isSubmitting: false });
+      fetchSections();
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'فشل إضافة الوزن للقسم');
+      setAddWeightModal(p => ({ ...p, isSubmitting: false }));
     }
   };
 
@@ -669,8 +711,13 @@ const InventoryPage = () => {
               <CheckCircle2 size={22} color="#16a34a" />
             </div>
             <div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>المتاح حالياً بالمخزن</div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>المتاح حالياً بالمخزن (شامل الأقسام)</div>
               <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#16a34a' }}>{fmt(summary.total_remaining_weight, 2)} كجم</div>
+              {Number(summary.sections_available_weight || 0) > 0 && (
+                <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: 2 }}>
+                  (أصناف: {fmt(summary.items_remaining_weight ?? (summary.total_remaining_weight - summary.sections_available_weight), 1)} + أقسام: {fmt(summary.sections_available_weight, 1)})
+                </div>
+              )}
             </div>
           </div>
 
@@ -948,7 +995,20 @@ const InventoryPage = () => {
                             {sec.notes || '—'}
                           </td>
                           <td style={{ padding: '12px 16px', textAlign: 'center' }}>
-                            <div style={{ display: 'inline-flex', gap: 6 }}>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenAddWeightModal(sec)}
+                                style={{
+                                  background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0',
+                                  borderRadius: 6, padding: '4px 10px', fontSize: '0.78rem',
+                                  fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
+                                  transition: 'all 0.15s'
+                                }}
+                                title="إضافة وزن جديد لرصيد هذا القسم"
+                              >
+                                <Plus size={13} /> إضافة وزن
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => handleOpenSectionItems(sec)}
@@ -1423,6 +1483,81 @@ const InventoryPage = () => {
               </button>
             </div>
           </div>
+        </Modal>
+      )}
+
+      {/* ─── Modal: Add Weight to Section ───────────────────────────── */}
+      {addWeightModal.isOpen && (
+        <Modal
+          isOpen={addWeightModal.isOpen}
+          onClose={() => setAddWeightModal(p => ({ ...p, isOpen: false, section: null }))}
+          title={`إضافة وزن لرصيد القسم: ${addWeightModal.section?.name || ''}`}
+          maxWidth="520px"
+        >
+          <form onSubmit={handleSaveAddWeight} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ background: '#f8fafc', padding: '12px 14px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: '0.85rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ color: '#64748b' }}>الرصيد المتاح الحالي بالقسم:</span>
+                <strong style={{ color: '#16a34a', fontSize: '0.95rem' }}>
+                  {fmt(addWeightModal.section ? (Number(addWeightModal.section.total_weight || 0) - Number(addWeightModal.section.issued_weight || 0)) : 0)} كجم
+                </strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: '#64748b' }}>الوزن الإجمالي المسجل:</span>
+                <strong>{fmt(addWeightModal.section?.total_weight || 0)} كجم</strong>
+              </div>
+            </div>
+
+            <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <label style={{ fontSize: '0.84rem', fontWeight: 700, color: '#334155' }}>
+                الوزن المراد إضافته (كجم) *
+              </label>
+              <input
+                type="number"
+                step="0.001"
+                min="0.001"
+                required
+                placeholder="مثال: 500"
+                value={addWeightModal.addedWeight}
+                onChange={e => setAddWeightModal(p => ({ ...p, addedWeight: e.target.value }))}
+                style={{ width: '100%', padding: '9px 12px', border: '1.5px solid #cbd5e1', borderRadius: 8, fontSize: '0.92rem', outline: 'none' }}
+              />
+              <span style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                سيتم زيادة هذا الوزن على إجمالي رصيد القسم وينعكس فوراً على المتاح العام بالمخزن
+              </span>
+            </div>
+
+            <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <label style={{ fontSize: '0.84rem', fontWeight: 700, color: '#334155' }}>
+                البيان / سبب الإضافة (اختياري)
+              </label>
+              <input
+                type="text"
+                placeholder="مثال: وارد بضاعة إضافي، تسوية ميزان..."
+                value={addWeightModal.notes}
+                onChange={e => setAddWeightModal(p => ({ ...p, notes: e.target.value }))}
+                style={{ width: '100%', padding: '9px 12px', border: '1.5px solid #cbd5e1', borderRadius: 8, fontSize: '0.92rem', outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 14, paddingTop: 14, borderTop: '1px solid #e2e8f0' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setAddWeightModal(p => ({ ...p, isOpen: false, section: null }))}
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={addWeightModal.isSubmitting}
+                style={{ background: 'linear-gradient(135deg, #16a34a, #15803d)', color: '#fff' }}
+              >
+                {addWeightModal.isSubmitting ? 'جاري الحفظ...' : 'تأكيد إضافة الوزن (+)'}
+              </button>
+            </div>
+          </form>
         </Modal>
       )}
 

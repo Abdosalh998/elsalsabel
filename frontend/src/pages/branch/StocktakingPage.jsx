@@ -703,100 +703,170 @@ const StocktakingPage = () => {
         onClose={() => setIsCreateModalOpen(false)}
         title="بدء جلسة جرد جديدة للمخزن"
       >
-        <form onSubmit={handleCreateSubmit} className="stocktake-form">
-          <div className="form-group">
-            <label className="required">عنوان / مسمى الجلسة</label>
+        <form onSubmit={handleCreateSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+          {/* Title */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontWeight: 700, fontSize: '0.85rem', color: '#1e293b' }}>
+              عنوان / مسمى الجلسة <span style={{ color: '#ef4444' }}>*</span>
+            </label>
             <input
               type="text"
               required
               placeholder="مثال: جرد شامل دوري لشهر نوفمبر 2026"
               value={createFormData.title}
               onChange={(e) => setCreateFormData(prev => ({ ...prev, title: e.target.value }))}
+              style={{
+                width: '100%', padding: '10px 14px', border: '1.5px solid #e2e8f0',
+                borderRadius: 10, fontSize: '0.9rem', outline: 'none',
+                background: '#f8fafc', direction: 'rtl', boxSizing: 'border-box',
+                transition: 'border-color 0.2s'
+              }}
             />
           </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label className="required">تاريخ الجرد</label>
+          {/* Date + Auditor */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ fontWeight: 700, fontSize: '0.85rem', color: '#1e293b' }}>
+                تاريخ الجرد <span style={{ color: '#ef4444' }}>*</span>
+              </label>
               <input
                 type="date"
                 required
                 value={createFormData.date}
                 onChange={(e) => setCreateFormData(prev => ({ ...prev, date: e.target.value }))}
+                style={{
+                  width: '100%', padding: '10px 14px', border: '1.5px solid #e2e8f0',
+                  borderRadius: 10, fontSize: '0.9rem', outline: 'none',
+                  background: '#f8fafc', direction: 'ltr', boxSizing: 'border-box'
+                }}
               />
             </div>
 
-            <div className="form-group">
-              <label>المراجع / القائم بالجرد</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ fontWeight: 700, fontSize: '0.85rem', color: '#1e293b' }}>
+                المراجع / القائم بالجرد
+              </label>
               <input
                 type="text"
                 placeholder="اسم الموظف أو رئيس لجنة الجرد"
                 value={createFormData.auditor_name}
                 onChange={(e) => setCreateFormData(prev => ({ ...prev, auditor_name: e.target.value }))}
+                style={{
+                  width: '100%', padding: '10px 14px', border: '1.5px solid #e2e8f0',
+                  borderRadius: 10, fontSize: '0.9rem', outline: 'none',
+                  background: '#f8fafc', direction: 'rtl', boxSizing: 'border-box'
+                }}
               />
             </div>
           </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label>نطاق الجرد</label>
-              <select
-                value={createFormData.type}
-                onChange={(e) => setCreateFormData(prev => ({ ...prev, type: e.target.value }))}
-              >
-                <option value="full">جرد كلي شامل (كافة الأصناف بالمخزن)</option>
-                <option value="section">جرد قسم محدد فقط</option>
-              </select>
-            </div>
-
-            {createFormData.type === 'section' && (
-              <div className="form-group">
-                <label className="required">اختر القسم المراد جرده</label>
-                <select
-                  required
-                  value={createFormData.section_id}
-                  onChange={(e) => setCreateFormData(prev => ({ ...prev, section_id: e.target.value }))}
+          {/* Scope */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontWeight: 700, fontSize: '0.85rem', color: '#1e293b' }}>نطاق الجرد</label>
+            <div style={{ display: 'flex', gap: 10 }}>
+              {[
+                { val: 'full', label: '📦 جرد كلي شامل', sub: 'جميع الأصناف بالمخزن' },
+                { val: 'section', label: '🗂️ جرد قسم محدد', sub: 'اختر القسم المراد فحصه' }
+              ].map(opt => (
+                <button
+                  key={opt.val}
+                  type="button"
+                  onClick={() => setCreateFormData(prev => ({ ...prev, type: opt.val, section_id: '' }))}
+                  style={{
+                    flex: 1, padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
+                    border: `2px solid ${createFormData.type === opt.val ? '#1A3A5C' : '#e2e8f0'}`,
+                    background: createFormData.type === opt.val ? '#EEF4FB' : '#f8fafc',
+                    color: createFormData.type === opt.val ? '#1A3A5C' : '#64748b',
+                    textAlign: 'center', transition: 'all 0.2s', fontSize: '0.85rem'
+                  }}
                 >
-                  <option value="">-- اختر القسم --</option>
-                  {sections.map(sec => (
-                    <option key={sec.id} value={sec.id}>{sec.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
+                  <div style={{ fontWeight: 700 }}>{opt.label}</div>
+                  <div style={{ fontSize: '0.75rem', marginTop: 2, opacity: 0.8 }}>{opt.sub}</div>
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="form-group">
-            <label>ملاحظات إضافية</label>
+          {createFormData.type === 'section' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ fontWeight: 700, fontSize: '0.85rem', color: '#1e293b' }}>
+                اختر القسم المراد جرده <span style={{ color: '#ef4444' }}>*</span>
+              </label>
+              <select
+                required
+                value={createFormData.section_id}
+                onChange={(e) => setCreateFormData(prev => ({ ...prev, section_id: e.target.value }))}
+                style={{
+                  width: '100%', padding: '10px 14px', border: '1.5px solid #e2e8f0',
+                  borderRadius: 10, fontSize: '0.9rem', outline: 'none',
+                  background: '#f8fafc', direction: 'rtl', boxSizing: 'border-box'
+                }}
+              >
+                <option value="">-- اختر القسم --</option>
+                {sections.map(sec => (
+                  <option key={sec.id} value={sec.id}>{sec.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Notes */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontWeight: 700, fontSize: '0.85rem', color: '#1e293b' }}>ملاحظات إضافية</label>
             <textarea
-              rows="3"
+              rows="2"
               placeholder="أي تعليمات أو ملاحظات خاصة بهذه الجلسة..."
               value={createFormData.notes}
               onChange={(e) => setCreateFormData(prev => ({ ...prev, notes: e.target.value }))}
+              style={{
+                width: '100%', padding: '10px 14px', border: '1.5px solid #e2e8f0',
+                borderRadius: 10, fontSize: '0.88rem', outline: 'none', resize: 'none',
+                background: '#f8fafc', direction: 'rtl', boxSizing: 'border-box', fontFamily: 'inherit'
+              }}
             />
           </div>
 
-          <div className="form-alert-info">
-            <Sparkles size={18} style={{ flexShrink: 0 }} />
+          {/* Info box */}
+          <div style={{
+            display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px',
+            background: 'linear-gradient(135deg, #EEF4FB, #e0eaf8)',
+            borderRadius: 10, border: '1px solid #c7d9f0', fontSize: '0.82rem',
+            color: '#1A3A5C', lineHeight: 1.6
+          }}>
+            <Sparkles size={16} style={{ flexShrink: 0, marginTop: 2, color: '#1A3A5C' }} />
             <span>
-              عند بدء الجلسة، سيقوم النظام تلقائياً بأخذ لقطة فورية (Snapshot) لأرصدة المخزن الدفترية الحالية لجميع الأصناف، لتمكينك من حصر الأرصدة ومقارنتها دون تأثر بحركات البيع والشراء اللاحقة.
+              عند بدء الجلسة، سيقوم النظام تلقائياً بأخذ <strong>لقطة فورية (Snapshot)</strong> لأرصدة
+              المخزن الدفترية الحالية لجميع الأصناف، لتمكينك من حصر الأرصدة ومقارنتها دون تأثر بحركات البيع والشراء اللاحقة.
             </span>
           </div>
 
-          <div className="modal-actions">
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 4 }}>
             <button
               type="button"
-              className="btn btn-secondary"
               onClick={() => setIsCreateModalOpen(false)}
+              style={{
+                padding: '10px 22px', borderRadius: 10, border: '1.5px solid #e2e8f0',
+                background: '#f1f5f9', color: '#475569', fontWeight: 600,
+                cursor: 'pointer', fontSize: '0.9rem'
+              }}
             >
               إلغاء
             </button>
             <button
               type="submit"
-              className="btn btn-primary"
               disabled={isSubmittingCreate}
+              style={{
+                padding: '10px 24px', borderRadius: 10, border: 'none',
+                background: isSubmittingCreate ? '#94a3b8' : 'linear-gradient(135deg, #1A3A5C, #2563eb)',
+                color: '#fff', fontWeight: 700, cursor: isSubmittingCreate ? 'not-allowed' : 'pointer',
+                fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 8,
+                boxShadow: isSubmittingCreate ? 'none' : '0 4px 12px rgba(26,58,92,0.3)'
+              }}
             >
-              {isSubmittingCreate ? 'جاري إنشاء الجلسة...' : 'بدء جلسة الجرد وحصر الأصناف'}
+              {isSubmittingCreate ? '⏳ جاري إنشاء الجلسة...' : '🚀 بدء جلسة الجرد وحصر الأصناف'}
             </button>
           </div>
         </form>

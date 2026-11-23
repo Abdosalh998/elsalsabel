@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "migrate": "node -e \"require('./src/db/migrations/schema')().then(() => process.exit(0))\""
+    "migrate": "node -e \"require('./src/db/migrations/schema')().then(() => process.exit(0))\"",
+    "reset:db": "node src/db/reset_local.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

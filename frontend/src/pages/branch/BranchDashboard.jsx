@@ -122,7 +122,7 @@ const BranchDashboard = () => {
         />
         <StatCard
           title="إجمالي وزن المخزن المتاح"
-          value={`${Number(stats?.inventory?.total_available_weight ?? 0).toFixed(2)} كج`}
+          value={`${Number(stats?.inventory?.total_available_weight ?? 0).toFixed(2)} كجم`}
           sub={`${stats?.inventory?.items_count ?? 0} صنف — ${stats?.inventory?.total_rolls ?? 0} لفة`}
           icon={BarChart2}
           color="#059669"

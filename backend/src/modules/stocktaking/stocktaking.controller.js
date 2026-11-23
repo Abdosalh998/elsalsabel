@@ -182,7 +182,7 @@ const createStocktake = async (req, res, next) => {
         product,
         company,
         section_id,
-        available_quantity,
+        GREATEST(0, COALESCE(available_quantity, 0)) AS available_quantity,
         count,
         issued_rolls,
         GREATEST(0, COALESCE(count, 0) - COALESCE(issued_rolls, 0)) AS available_rolls,
@@ -198,8 +198,8 @@ const createStocktake = async (req, res, next) => {
     let totalSysWeight = 0;
     let totalSysRolls = 0;
     invRes.rows.forEach(r => {
-      totalSysWeight += Number(r.available_quantity || 0);
-      totalSysRolls += Number(r.available_rolls || 0);
+      totalSysWeight += Math.max(0, Number(r.available_quantity || 0));
+      totalSysRolls += Math.max(0, Number(r.available_rolls || 0));
     });
 
     // Insert stocktakes session header
@@ -226,8 +226,8 @@ const createStocktake = async (req, res, next) => {
     // Insert snapshot items
     if (invRes.rows.length > 0) {
       for (const inv of invRes.rows) {
-        const sysWeight = Number(inv.available_quantity || 0);
-        const sysRolls = Number(inv.available_rolls || 0);
+        const sysWeight = Math.max(0, Number(inv.available_quantity || 0));
+        const sysRolls = Math.max(0, Number(inv.available_rolls || 0));
         const uPrice = Number(inv.unit_price || 0);
 
         await client.query(`

@@ -254,7 +254,7 @@ const addReturn = async (req, res, next) => {
       throw new Error('يرجى تحديد صنف المخزون أو إدخال اسم المنتج');
     }
 
-    const returnTotal = returnWeight * tonPrice; // حاصل ضرب الوزن في سعر الطن
+    const returnTotal = returnWeight * tonPrice; // حاصل ضرب الوزن في سعر الوزن
 
     // Add weight (and rolls if provided) back to inventory
     await client.query(

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../../config/db');
 const { authenticate } = require('../../middleware/auth');
-const { sendSuccess } = require('../../utils/helpers');
+const { sendSuccess, getEffectiveBranchId } = require('../../utils/helpers');
 
 /**
  * GET /api/dashboard/stats
@@ -10,7 +10,7 @@ const { sendSuccess } = require('../../utils/helpers');
  */
 router.get('/stats', authenticate, async (req, res, next) => {
   try {
-    const { branch_id } = req.user;
+    const branch_id = getEffectiveBranchId(req) || req.user?.branch_id;
 
     const [
       customersRes,
@@ -25,11 +25,12 @@ router.get('/stats', authenticate, async (req, res, next) => {
       // Total active customers
       pool.query(`SELECT COUNT(*) as count FROM customers WHERE branch_id = $1 AND is_active = true`, [branch_id]),
 
-      // Total inventory items & available weight
+      // Total inventory items & available weight (including warehouse sections)
       pool.query(`
         SELECT COUNT(*) as items_count,
-               COALESCE(SUM(available_quantity), 0) as total_available_weight,
-               COALESCE(SUM(count), 0) as total_rolls
+               COALESCE(SUM(CASE WHEN section_id IS NULL THEN GREATEST(0, available_quantity) ELSE 0 END), 0) +
+               COALESCE((SELECT SUM(GREATEST(0, total_weight - issued_weight)) FROM inventory_sections WHERE branch_id = $1 AND is_active = true), 0) as total_available_weight,
+               COALESCE(SUM(GREATEST(0, count - COALESCE(issued_rolls, 0))), 0) as total_rolls
         FROM inventory WHERE branch_id = $1
       `, [branch_id]),
 
@@ -90,23 +91,23 @@ router.get('/stats', authenticate, async (req, res, next) => {
     ]);
 
     return sendSuccess(res, {
-      customers:   { count: parseInt(customersRes.rows[0].count) },
-      inventory:   {
-        items_count:            parseInt(inventoryRes.rows[0].items_count),
+      customers: { count: parseInt(customersRes.rows[0].count) },
+      inventory: {
+        items_count: parseInt(inventoryRes.rows[0].items_count),
         total_available_weight: parseFloat(inventoryRes.rows[0].total_available_weight),
-        total_rolls:            parseInt(inventoryRes.rows[0].total_rolls)
+        total_rolls: parseInt(inventoryRes.rows[0].total_rolls)
       },
       sales: {
-        invoices_count:  parseInt(salesRes.rows[0].invoices_count),
-        total_sales:     parseFloat(salesRes.rows[0].total_sales),
+        invoices_count: parseInt(salesRes.rows[0].invoices_count),
+        total_sales: parseFloat(salesRes.rows[0].total_sales),
         total_collected: parseFloat(salesRes.rows[0].total_collected),
         total_remaining: parseFloat(salesRes.rows[0].total_remaining)
       },
-      expenses:  { total_expenses:  parseFloat(expensesRes.rows[0].total_expenses) },
+      expenses: { total_expenses: parseFloat(expensesRes.rows[0].total_expenses) },
       purchases: { total_purchases: parseFloat(purchasesRes.rows[0].total_purchases) },
-      treasury:  { current_balance: parseFloat(treasuryRes.rows[0].current_balance) },
+      treasury: { current_balance: parseFloat(treasuryRes.rows[0].current_balance) },
       recent_sales: recentSalesRes.rows,
-      low_stock:    lowStockRes.rows
+      low_stock: lowStockRes.rows
     });
   } catch (err) {
     next(err);

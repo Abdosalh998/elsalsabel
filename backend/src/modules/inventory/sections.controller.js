@@ -242,6 +242,45 @@ const getSectionsWithItems = async (req, res, next) => {
   }
 };
 
+// ─── POST add weight to section ─────────────────────────────────────────────
+const addWeightToSection = async (req, res, next) => {
+  try {
+    const branch_id = getEffectiveBranchId(req);
+    const { id } = req.params;
+    const { added_weight, notes } = req.body;
+
+    const numWeight = Number(added_weight || 0);
+    if (isNaN(numWeight) || numWeight <= 0) {
+      return sendError(res, 'الوزن المراد إضافته يجب أن يكون رقماً أكبر من الصفر');
+    }
+
+    const existing = await pool.query(
+      `SELECT * FROM inventory_sections WHERE id = $1 AND branch_id = $2`,
+      [id, branch_id]
+    );
+    if (existing.rows.length === 0) return sendError(res, 'القسم غير موجود', 404);
+
+    const sec = existing.rows[0];
+    const newTotal = Number(sec.total_weight || 0) + numWeight;
+    const noteText = notes && notes.trim() ? ` (${notes.trim()})` : '';
+    const newNotes = sec.notes && sec.notes.trim()
+      ? `${sec.notes}\n[+${numWeight} كجم بتاريخ ${new Date().toLocaleDateString('ar-EG')}${noteText}]`
+      : `[+${numWeight} كجم بتاريخ ${new Date().toLocaleDateString('ar-EG')}${noteText}]`;
+
+    const result = await pool.query(
+      `UPDATE inventory_sections
+       SET total_weight = $1, notes = $2, updated_at = NOW()
+       WHERE id = $3 AND branch_id = $4
+       RETURNING *, (total_weight - issued_weight) AS available_weight`,
+      [newTotal, newNotes, id, branch_id]
+    );
+
+    return sendSuccess(res, result.rows[0], 200, `تمت إضافة ${numWeight} كجم لرصيد القسم بنجاح`);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getSections,
   getSectionById,
@@ -250,4 +289,5 @@ module.exports = {
   deleteSection,
   assignItemToSection,
   getSectionsWithItems,
+  addWeightToSection,
 };

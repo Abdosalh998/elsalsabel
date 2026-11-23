@@ -8,12 +8,14 @@ const {
   deleteJardItem,
   addMovement,
   deleteMovement,
-  getJardForPOS
+  getJardForPOS,
+  syncWithInventory
 } = require('./jard.controller');
 const { authenticate } = require('../../middleware/auth');
 
 router.use(authenticate);
 
+router.post('/sync', syncWithInventory);
 router.get('/pos', getJardForPOS);
 router.get('/', getJardList);
 router.get('/:id', getJardById);

@@ -199,7 +199,8 @@ const getComprehensiveReport = async (req, res, next) => {
     const invRes = await pool.query(`
       SELECT 
         COUNT(id) as total_items,
-        COALESCE(SUM(available_quantity), 0) as total_available_weight,
+        COALESCE(SUM(CASE WHEN section_id IS NULL THEN GREATEST(0, available_quantity) ELSE 0 END), 0) +
+        COALESCE((SELECT SUM(GREATEST(0, total_weight - issued_weight)) FROM inventory_sections WHERE branch_id = $1 AND is_active = true), 0) as total_available_weight,
         COALESCE(SUM(count - COALESCE(issued_rolls, 0)), 0) as total_available_rolls,
         COALESCE(SUM(available_quantity * COALESCE(price_per_kg, 0)), 0) as total_inventory_value
       FROM inventory

@@ -40,7 +40,7 @@ const CHANNEL_OPTIONS = [
   { value: 'bank', label: 'إيداع بنكي', icon: Landmark },
 ];
 
-const EMPTY_SALE_ITEM = { section_id: '', inventory_id: '', weight: '', rolls_count: '1', price: '' };
+const EMPTY_SALE_ITEM = { section_id: '', inventory_id: '', weight: '', rolls_count: '', price: '', is_issue_only: false };
 const EMPTY_RETURN_ITEM = { inventory_id: '', product: '', company: '', weight: '', rolls_count: '', price_per_ton: '', total: '', notes: '' };
 const EMPTY_EXPENSE_ITEM = { description: '', amount: '', notes: '' };
 
@@ -153,7 +153,13 @@ const POSPage = () => {
 
   const handleDeductionSourceChange = (src) => {
     setDeductionSource(src);
-    setSaleItems([{ ...EMPTY_SALE_ITEM }]);
+    // لا نحذف الأصناف السابقة، وإذا كان هناك بند واحد فارغ لم يُحدد بعد نحدث مصدره
+    setSaleItems(prev => {
+      if (prev.length === 1 && !prev[0].inventory_id) {
+        return [{ ...prev[0], deduction_source: src }];
+      }
+      return prev;
+    });
   };
 
   // ── SALE Form ──────────────────────────────────────────────────
@@ -193,7 +199,7 @@ const POSPage = () => {
     quantity: '',       // وزن إجمالي (كجم)
     count: '',          // عدد اللفات
     discount: '0',      // الخصم / العجز (كجم)
-    price_per_ton: '',  // سعر الطن (ج.م)
+    price_per_ton: '',  // سعر الوزن (ج.م)
     price_per_kg: '',   // سعر الكيلو (ج.م)
     roll_price: '',     // سعر اللفة (ج.م)
     total: '',          // إجمالي الفاتورة
@@ -417,7 +423,15 @@ const POSPage = () => {
       toast.error('يرجى اختيار عميل أو إدخال بيانات عميل جديد');
       return;
     }
-    const validItems = saleItems.filter(i => i.inventory_id && parseFloat(i.weight) > 0);
+    const validItems = saleItems.filter(i => {
+      if (!i.inventory_id) return false;
+      const itSrc = i.deduction_source || deductionSource;
+      const isIssue = Boolean(i.is_issue_only || itSrc === 'jard');
+      if (isIssue) {
+        return (parseInt(i.rolls_count) > 0 || parseFloat(i.weight) > 0);
+      }
+      return (parseFloat(i.weight) > 0 || parseInt(i.rolls_count) > 0);
+    });
     const validReturns = saleReturns.filter(r => (r.inventory_id || r.product) && parseFloat(r.weight) > 0 && parseFloat(r.price_per_ton) > 0);
 
     if (!validItems.length && !validReturns.length) {
@@ -425,55 +439,69 @@ const POSPage = () => {
       return;
     }
 
-    if (deductionSource === 'jard') {
-      for (const it of validItems) {
+    // Validate Jard items
+    for (const it of validItems) {
+      const itSrc = it.deduction_source || deductionSource;
+      if (itSrc === 'jard') {
         const jItem = jardList.find(x => String(x.id) === String(it.inventory_id));
-        const reqR = parseInt(it.rolls_count) || 1;
-        if (jItem && reqR > Number(jItem.available_rolls || 0)) {
+        const reqR = parseInt(it.rolls_count) || 0;
+        if (jItem && reqR > 0 && reqR > Number(jItem.available_rolls || 0)) {
           toast.error(`عدد اللفات المطلوب للصنف "${jItem.product}" (${reqR} لفة) يتجاوز رصيد الجرد المتاح (${jItem.available_rolls} لفة)`);
           return;
         }
       }
-    } else {
-      // Check section weights
-      const secUsage = {};
-      for (const it of validItems) {
+    }
+
+    // Validate Warehouse section weights
+    const secUsage = {};
+    for (const it of validItems) {
+      const itSrc = it.deduction_source || deductionSource;
+      if (itSrc === 'general') {
         const sId = it.section_id;
-        if (sId) {
+        if (sId && parseFloat(it.weight) > 0) {
           secUsage[sId] = (secUsage[sId] || 0) + (parseFloat(it.weight) || 0);
         }
       }
-      for (const [sId, neededW] of Object.entries(secUsage)) {
-        const sec = sectionsList.find(s => String(s.id) === String(sId));
-        if (sec) {
-          const avail = Number(sec.available_weight ?? (sec.total_weight - sec.issued_weight));
-          if (neededW > avail) {
-            toast.error(`وزن القسم "${sec.name}" غير كافٍ. المطلوب: ${neededW} كجم، والمتاح: ${avail.toFixed(2)} كجم`);
-            return;
-          }
+    }
+    for (const [sId, neededW] of Object.entries(secUsage)) {
+      const sec = sectionsList.find(s => String(s.id) === String(sId));
+      if (sec) {
+        const avail = Number(sec.available_weight ?? (sec.total_weight - sec.issued_weight));
+        if (neededW > avail) {
+          toast.error(`وزن القسم "${sec.name}" غير كافٍ. المطلوب: ${neededW} كجم، والمتاح: ${avail.toFixed(2)} كجم`);
+          return;
         }
       }
     }
 
     setIsSubmitting(true);
     try {
+      const hasJard = validItems.some(i => (i.deduction_source || deductionSource) === 'jard');
+      const hasGeneral = validItems.some(i => (i.deduction_source || deductionSource) === 'general');
+      const invoiceDeductionSource = (hasJard && hasGeneral) ? 'mixed' : (hasJard ? 'jard' : 'general');
+
       const payload = {
         date: saleForm.date,
-        deduction_source: deductionSource,
+        deduction_source: invoiceDeductionSource,
         customer_id: saleForm.isNewCustomer ? null : (saleForm.customer_id || saleForm.customer?.id),
         customer_name: saleForm.isNewCustomer ? saleForm.customer_name : undefined,
         phone: saleForm.isNewCustomer ? saleForm.phone : undefined,
         saveNewCustomer: saleForm.isNewCustomer ? saleForm.saveNewCustomer : undefined,
         save_new_customer: saleForm.isNewCustomer ? saleForm.saveNewCustomer : undefined,
-        items: validItems.map(i => ({
-          inventory_id: deductionSource === 'general' ? i.inventory_id : null,
-          jard_id: deductionSource === 'jard' ? i.inventory_id : null,
-          deduction_source: deductionSource,
-          section_id: i.section_id ? parseInt(i.section_id) : undefined,
-          weight: parseFloat(i.weight),
-          rolls_count: parseInt(i.rolls_count) || 1,
-          price: parseFloat(i.price),
-        })),
+        items: validItems.map(i => {
+          const itemSrc = i.deduction_source || deductionSource;
+          const isIssue = Boolean(i.is_issue_only || (itemSrc === 'jard' && (!parseFloat(i.price) || !parseFloat(i.weight))));
+          return {
+            inventory_id: itemSrc === 'general' ? i.inventory_id : null,
+            jard_id: itemSrc === 'jard' ? i.inventory_id : null,
+            deduction_source: itemSrc,
+            section_id: i.section_id ? parseInt(i.section_id) : undefined,
+            weight: parseFloat(i.weight) || 0,
+            rolls_count: parseInt(i.rolls_count) || 0,
+            price: parseFloat(i.price) || 0,
+            is_issue_only: isIssue,
+          };
+        }),
         returns: validReturns.map(r => ({
           inventory_id: r.inventory_id ? parseInt(r.inventory_id) : null,
           product: r.product,
@@ -492,15 +520,15 @@ const POSPage = () => {
           : (saleForm.payment_type_id || null),
         payments: isMultiPayment
           ? salePayments.filter(p => p.payment_type_id && parseFloat(p.amount) > 0).map(p => ({
-              payment_type_id: parseInt(p.payment_type_id),
-              amount: parseFloat(p.amount),
-              notes: p.notes || ''
-            }))
+            payment_type_id: parseInt(p.payment_type_id),
+            amount: parseFloat(p.amount),
+            notes: p.notes || ''
+          }))
           : (salePaid > 0 && saleForm.payment_type_id ? [{
-              payment_type_id: parseInt(saleForm.payment_type_id),
-              amount: salePaid,
-              notes: ''
-            }] : []),
+            payment_type_id: parseInt(saleForm.payment_type_id),
+            amount: salePaid,
+            notes: ''
+          }] : []),
         notes: saleForm.notes,
         use_customer_credit: saleForm.use_customer_credit,
         receipt_image: saleForm.receipt_image || null,
@@ -850,17 +878,28 @@ const POSPage = () => {
   };
 
   // ─── Sale Items Helpers ─────────────────────────────────────────
-  const addSaleItem = () => setSaleItems(prev => [...prev, { ...EMPTY_SALE_ITEM }]);
+  const addSaleItem = (src) => setSaleItems(prev => [
+    ...prev,
+    { ...EMPTY_SALE_ITEM, deduction_source: (typeof src === 'string' ? src : deductionSource) }
+  ]);
   const removeSaleItem = (i) => setSaleItems(prev => prev.filter((_, idx) => idx !== i));
   const updateSaleItem = (i, field, val) =>
     setSaleItems(prev => prev.map((it, idx) => {
       if (idx !== i) return it;
       const updated = { ...it, [field]: val };
       if (field === 'inventory_id' && val) {
-        // inventoryList is now grouped: match by sample_id or product name
-        const inv = inventoryList.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val));
-        if (inv && !updated.price && (inv.avg_price_per_kg || inv.avg_roll_price || inv.price_per_kg || inv.roll_price)) {
-          updated.price = String(inv.avg_price_per_kg || inv.avg_roll_price || inv.price_per_kg || inv.roll_price || '');
+        const itSrc = updated.deduction_source || deductionSource;
+        if (itSrc === 'jard') {
+          const jItem = jardList.find(x => String(x.id) === String(val));
+          if (jItem && !updated.section_id && jItem.section_id) {
+            updated.section_id = String(jItem.section_id);
+          }
+        } else {
+          // inventoryList is now grouped: match by sample_id or product name
+          const inv = inventoryList.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val));
+          if (inv && !updated.price && (inv.avg_price_per_kg || inv.avg_roll_price || inv.price_per_kg || inv.roll_price)) {
+            updated.price = String(inv.avg_price_per_kg || inv.avg_roll_price || inv.price_per_kg || inv.roll_price || '');
+          }
         }
       }
       return updated;
@@ -1373,7 +1412,7 @@ const SaleForm = ({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <label style={{ ...labelStyle, marginBottom: 0 }}><Package size={12} style={{ marginLeft: 4 }} />البنود المباعة</label>
-            {/* خيار جهة الخصم */}
+            {/* خيار جهة الخصم الافتراضية */}
             <div style={{ display: 'inline-flex', background: '#f1f5f9', padding: '2px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
               <button
                 type="button"
@@ -1383,7 +1422,7 @@ const SaleForm = ({
                   } else {
                     setDeductionSource?.('general');
                     if (typeof setSaleItems === 'function') {
-                      setSaleItems([{ ...EMPTY_SALE_ITEM }]);
+                      setSaleItems(prev => (prev.length === 1 && !prev[0].inventory_id ? [{ ...prev[0], deduction_source: 'general' }] : prev));
                     }
                   }
                 }}
@@ -1394,6 +1433,7 @@ const SaleForm = ({
                   color: deductionSource === 'general' ? '#ffffff' : '#64748b',
                   transition: 'all 0.15s'
                 }}
+                title="تحديد المخزن العام كمصدر افتراضي للبنود الجديدة"
               >
                 <Package size={12} />
                 الخصم من المخزن العام
@@ -1406,7 +1446,7 @@ const SaleForm = ({
                   } else {
                     setDeductionSource?.('jard');
                     if (typeof setSaleItems === 'function') {
-                      setSaleItems([{ ...EMPTY_SALE_ITEM }]);
+                      setSaleItems(prev => (prev.length === 1 && !prev[0].inventory_id ? [{ ...prev[0], deduction_source: 'jard' }] : prev));
                     }
                   }
                 }}
@@ -1417,6 +1457,7 @@ const SaleForm = ({
                   color: deductionSource === 'jard' ? '#ffffff' : '#64748b',
                   transition: 'all 0.15s'
                 }}
+                title="تحديد رصيد الجرد كمصدر افتراضي للبنود الجديدة"
               >
                 <Layers size={12} />
                 الخصم من رصيد الجرد
@@ -1424,241 +1465,346 @@ const SaleForm = ({
             </div>
           </div>
 
-          <button type="button" onClick={addSaleItem}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', fontWeight: 700,
-              color: '#16a34a', background: '#dcfce7', border: '1px solid #bbf7d0', borderRadius: 6,
-              padding: '4px 10px', cursor: 'pointer'
-            }}>
-            <Plus size={13} /> إضافة بند
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              type="button"
+              onClick={() => addSaleItem('general')}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.76rem', fontWeight: 700,
+                color: '#1e293b', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 6,
+                padding: '4px 9px', cursor: 'pointer'
+              }}
+              title="إضافة بند مبيعات من المخزن العام"
+            >
+              <Plus size={12} /> بند مخزن
+            </button>
+            <button
+              type="button"
+              onClick={() => addSaleItem('jard')}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.76rem', fontWeight: 700,
+                color: '#0369a1', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 6,
+                padding: '4px 9px', cursor: 'pointer'
+              }}
+              title="إضافة بند مبيعات من رصيد الجرد"
+            >
+              <Plus size={12} /> بند جرد
+            </button>
+          </div>
         </div>
         <div className="pos-table-scroll">
           <div className="pos-sale-items-table">
-          {/* Header row */}
-          <div className="pos-sale-items-row" style={{
-            background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '8px 10px', fontSize: '0.74rem', fontWeight: 700, color: '#64748b'
-          }}>
-            <span>القسم</span><span>الصنف / المنتج</span><span>الوزن (كجم)</span><span>اللفات</span><span>السعر</span><span></span>
-          </div>
-
-          {saleItems.length === 0 ? (
-            <div style={{ padding: '18px 20px', textAlign: 'center', background: '#f8fafc', color: '#64748b', fontSize: '0.84rem' }}>
-              <div style={{ marginBottom: 8, fontWeight: 700, color: '#475569' }}>
-                لا توجد أصناف مبيعات مضافة {saleReturns.length > 0 ? '(فاتورة مرتجع بضاعة فقط)' : ''}
-              </div>
-              <button
-                type="button"
-                onClick={addSaleItem}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', fontWeight: 700,
-                  color: '#16a34a', background: '#dcfce7', border: '1px solid #bbf7d0', borderRadius: 6,
-                  padding: '5px 14px', cursor: 'pointer'
-                }}
-              >
-                <Plus size={14} /> إضافة صنف مبيعات للفاتورة
-              </button>
+            {/* Header row */}
+            <div className="pos-sale-items-row" style={{
+              background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '8px 10px', fontSize: '0.74rem', fontWeight: 700, color: '#64748b'
+            }}>
+              <span>المصدر</span><span>القسم</span><span>الصنف / المنتج</span><span>الوزن (كجم)</span><span>اللفات</span><span>السعر</span><span></span>
             </div>
-          ) : (
-            saleItems.map((item, i) => {
-              const selectedInv = deductionSource === 'general'
-                ? inventoryList.find(inv => String(inv.sample_id) === String(item.inventory_id) || String(inv.id) === String(item.inventory_id))
-                : null;
-              const selectedJard = deductionSource === 'jard'
-                ? jardList.find(j => String(j.id) === String(item.inventory_id))
-                : null;
 
-              const availW = selectedInv ? Number(selectedInv.total_available_weight ?? selectedInv.available_quantity ?? selectedInv.remaining_weight ?? 0) : null;
-              const availR = selectedInv ? Number(selectedInv.total_available_rolls ?? 0) : null;
+            {saleItems.length === 0 ? (
+              <div style={{ padding: '18px 20px', textAlign: 'center', background: '#f8fafc', color: '#64748b', fontSize: '0.84rem' }}>
+                <div style={{ marginBottom: 8, fontWeight: 700, color: '#475569' }}>
+                  لا توجد أصناف مبيعات مضافة {saleReturns.length > 0 ? '(فاتورة مرتجع بضاعة فقط)' : ''}
+                </div>
+                <div style={{ display: 'inline-flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => addSaleItem('general')}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', fontWeight: 700,
+                      color: '#1e293b', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 6,
+                      padding: '5px 14px', cursor: 'pointer'
+                    }}
+                  >
+                    <Plus size={14} /> إضافة بند مخزن
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addSaleItem('jard')}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', fontWeight: 700,
+                      color: '#0369a1', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 6,
+                      padding: '5px 14px', cursor: 'pointer'
+                    }}
+                  >
+                    <Plus size={14} /> إضافة بند جرد
+                  </button>
+                </div>
+              </div>
+            ) : (
+              saleItems.map((item, i) => {
+                const itemSource = item.deduction_source || deductionSource;
+                const selectedInv = itemSource === 'general'
+                  ? inventoryList.find(inv => String(inv.sample_id) === String(item.inventory_id) || String(inv.id) === String(item.inventory_id))
+                  : null;
+                const selectedJard = itemSource === 'jard'
+                  ? jardList.find(j => String(j.id) === String(item.inventory_id))
+                  : null;
 
-              const selectedSec = sectionsList.find(s => String(s.id) === String(item.section_id));
-              const secAvail = selectedSec ? Number(selectedSec.available_weight ?? (selectedSec.total_weight - selectedSec.issued_weight)) : null;
-              const isOverSecWeight = (deductionSource === 'general') && selectedSec && Number(item.weight || 0) > secAvail;
-              const isOverWeight = (deductionSource === 'general') && !selectedSec && selectedInv && Number(item.weight || 0) > availW;
-              const isOverJardRolls = (deductionSource === 'jard') && selectedJard && Number(item.rolls_count || 1) > Number(selectedJard.available_rolls || 0);
+                const availW = selectedInv ? Number(selectedInv.total_available_weight ?? selectedInv.available_quantity ?? selectedInv.remaining_weight ?? 0) : null;
+                const availR = selectedInv ? Number(selectedInv.total_available_rolls ?? 0) : null;
 
-              // Filter products based on selected section
-              let productsForSection = [];
-              if (deductionSource === 'jard') {
-                productsForSection = item.section_id
-                  ? jardList.filter(j => String(j.section_id) === String(item.section_id))
-                  : jardList;
-              } else if (item.section_id) {
-                const currentSec = sectionsList.find(s => String(s.id) === String(item.section_id));
-                if (currentSec) {
-                  // الأصناف المربوطة حصراً بهذا القسم
-                  const secItems = currentSec.items || [];
-                  const mapped = secItems.map(si => {
-                    const matched = inventoryList.find(inv =>
-                      String(inv.sample_id) === String(si.id) || String(inv.id) === String(si.id)
-                    );
-                    return matched || {
-                      id: si.id,
-                      sample_id: si.id,
-                      product: si.product,
-                      company: si.company,
-                      section_id: currentSec.id,
-                      section_name: currentSec.name,
-                      price_per_kg: si.price_per_kg || 0,
-                      roll_price: si.roll_price || 0,
-                      total_available_weight: 0,
-                      available_quantity: 0,
-                      total_available_rolls: 0,
-                      available_rolls: 0,
-                    };
-                  });
+                const selectedSec = sectionsList.find(s => String(s.id) === String(item.section_id));
+                const secAvail = selectedSec ? Number(selectedSec.available_weight ?? (selectedSec.total_weight - selectedSec.issued_weight)) : null;
+                const isOverSecWeight = (itemSource === 'general') && selectedSec && Number(item.weight || 0) > secAvail;
+                const isOverWeight = (itemSource === 'general') && !selectedSec && selectedInv && Number(item.weight || 0) > availW;
+                const isOverJardRolls = (itemSource === 'jard') && selectedJard && Number(item.rolls_count || 0) > 0 && Number(item.rolls_count) > Number(selectedJard.available_rolls || 0);
 
-                  // الأصناف المربوطة بالقسم فقط من السيرفر (getSectionsWithItems هو المرجع الموثوق)
-                  productsForSection = mapped;
+                // Filter products based on selected section and itemSource
+                let productsForSection = [];
+                if (itemSource === 'jard') {
+                  productsForSection = item.section_id
+                    ? jardList.filter(j => String(j.section_id) === String(item.section_id))
+                    : jardList;
+                } else if (item.section_id) {
+                  const currentSec = sectionsList.find(s => String(s.id) === String(item.section_id));
+                  if (currentSec) {
+                    const secItems = currentSec.items || [];
+                    const mapped = secItems.map(si => {
+                      const matched = inventoryList.find(inv =>
+                        String(inv.sample_id) === String(si.id) || String(inv.id) === String(si.id)
+                      );
+                      return matched || {
+                        id: si.id,
+                        sample_id: si.id,
+                        product: si.product,
+                        company: si.company,
+                        section_id: currentSec.id,
+                        section_name: currentSec.name,
+                        price_per_kg: si.price_per_kg || 0,
+                        roll_price: si.roll_price || 0,
+                        total_available_weight: 0,
+                        available_quantity: 0,
+                        total_available_rolls: 0,
+                        available_rolls: 0,
+                      };
+                    });
+                    productsForSection = mapped;
+                  }
+                } else {
+                  productsForSection = inventoryList;
                 }
-              } else {
-                productsForSection = inventoryList;
-              }
 
-              return (
-                <div key={i} style={{ borderBottom: i < saleItems.length - 1 ? '1px solid #f1f5f9' : 'none', padding: '8px 10px' }}>
-                  <div className="pos-sale-items-row" style={{ alignItems: 'center' }}>
-                    {/* Section Selector */}
-                    <select
-                      value={item.section_id || ''}
-                      onChange={e => {
-                        const secId = e.target.value;
-                        updateSaleItem(i, 'section_id', secId);
-                        if (secId) {
-                          const sec = sectionsList.find(s => String(s.id) === String(secId));
-                          const inSec = sec?.items?.some(it => String(it.id) === String(item.inventory_id));
-                          if (!inSec) updateSaleItem(i, 'inventory_id', '');
-                        }
-                      }}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
-                    >
-                      <option value="">-- كل الأقسام --</option>
-                      {sectionsList.map(sec => {
-                        const sAvail = Number(sec.available_weight ?? (sec.total_weight - sec.issued_weight));
-                        return (
-                          <option key={sec.id} value={sec.id} disabled={sAvail <= 0}>
-                            {sec.name} {sAvail <= 0 ? '(نفذ)' : `— متاح: ${sAvail.toFixed(2)} كجم`}
-                          </option>
-                        );
-                      })}
-                    </select>
+                return (
+                  <div key={i} style={{ borderBottom: i < saleItems.length - 1 ? '1px solid #f1f5f9' : 'none', padding: '8px 10px' }}>
+                    <div className="pos-sale-items-row" style={{ alignItems: 'center' }}>
+                      {/* Item Source Selector (المخزن العام / رصيد الجرد) */}
+                      <select
+                        value={itemSource}
+                        onChange={e => {
+                          const newSrc = e.target.value;
+                          updateSaleItem(i, 'deduction_source', newSrc);
+                          updateSaleItem(i, 'inventory_id', '');
+                        }}
+                        style={{
+                          ...fieldStyle,
+                          padding: '7px 4px',
+                          fontSize: '0.78rem',
+                          fontWeight: 700,
+                          color: itemSource === 'jard' ? '#0369a1' : '#1e293b',
+                          background: itemSource === 'jard' ? '#f0f9ff' : '#f8fafc',
+                          borderColor: itemSource === 'jard' ? '#bae6fd' : '#cbd5e1',
+                        }}
+                        title="جهة خصم هذا البند"
+                      >
+                        <option value="general">📦 المخزن</option>
+                        <option value="jard">📋 الجرد</option>
+                      </select>
 
-                    {/* Product Selector */}
-                    <select value={item.inventory_id}
-                      onChange={e => {
-                        const val = e.target.value;
-                        updateSaleItem(i, 'inventory_id', val);
-                        if (deductionSource === 'jard') {
-                          const jItem = jardList.find(x => String(x.id) === String(val));
-                          if (jItem && !item.section_id && jItem.section_id) {
-                            updateSaleItem(i, 'section_id', String(jItem.section_id));
-                          }
-                        } else {
-                          const inv = productsForSection.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val))
-                            || inventoryList.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val));
-                          if (inv) {
-                            if (inv.price_per_kg && !item.price) {
-                              updateSaleItem(i, 'price', inv.price_per_kg);
-                            }
-                            if (!item.section_id && inv.section_id) {
-                              updateSaleItem(i, 'section_id', String(inv.section_id));
+                      {/* Section Selector */}
+                      <select
+                        value={item.section_id || ''}
+                        onChange={e => {
+                          const secId = e.target.value;
+                          updateSaleItem(i, 'section_id', secId);
+                          if (secId) {
+                            if (itemSource === 'general') {
+                              const sec = sectionsList.find(s => String(s.id) === String(secId));
+                              const inSec = sec?.items?.some(it => String(it.id) === String(item.inventory_id));
+                              if (!inSec) updateSaleItem(i, 'inventory_id', '');
+                            } else {
+                              const inJardSec = jardList.some(j => String(j.id) === String(item.inventory_id) && String(j.section_id) === String(secId));
+                              if (!inJardSec) updateSaleItem(i, 'inventory_id', '');
                             }
                           }
-                        }
-                      }}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}>
-                      <option value="">
-                        {deductionSource === 'jard'
-                          ? (productsForSection.length === 0 ? '-- لا توجد أصناف متاحة بالجرد لهذا القسم --' : '-- اختر صنف الجرد --')
-                          : (item.section_id && productsForSection.length === 0
-                              ? '-- لا توجد أصناف مربوطة بهذا القسم --'
-                              : '-- اختر الصنف / المنتج --')}
-                      </option>
-                      {deductionSource === 'jard' ? (
-                        productsForSection.map(j => (
-                          <option key={j.id} value={j.id}>
-                            {j.product} [{j.company}] — (متاح بالجرد: {j.available_rolls} لفة | {fmt(j.available_weight)} كجم)
-                          </option>
-                        ))
-                      ) : (
-                        productsForSection.map(inv => {
-                          const w = Number(inv.total_available_weight ?? inv.available_quantity ?? inv.remaining_weight ?? 0);
-                          const r = Number(inv.total_available_rolls ?? Math.max(0, Number(inv.available_rolls ?? (Number(inv.count || 0) - Number(inv.issued_rolls || 0)))));
-                          const key = inv.sample_id ?? inv.id;
-                          const displayLabel = item.section_id
-                            ? (r > 0 ? `${inv.product} — (${r} لفة)` : inv.product)
-                            : (w > 0 ? `${inv.product} — متاح: ${w.toFixed(2)} كجم | ${r} لفة` : inv.product);
+                        }}
+                        style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                      >
+                        <option value="">-- كل الأقسام --</option>
+                        {sectionsList.map(sec => {
+                          const sAvail = Number(sec.available_weight ?? (sec.total_weight - sec.issued_weight));
                           return (
-                            <option key={key} value={key}>
-                              {displayLabel}
+                            <option key={sec.id} value={sec.id} disabled={itemSource === 'general' && sAvail <= 0}>
+                              {sec.name} {sAvail <= 0 ? '(نفذ)' : `— متاح: ${sAvail.toFixed(2)} كجم`}
                             </option>
                           );
-                        })
-                      )}
-                    </select>
+                        })}
+                      </select>
 
-                    <input type="number" placeholder="الوزن كجم" value={item.weight} min="0" step="0.001"
-                      onChange={e => updateSaleItem(i, 'weight', e.target.value)}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem', borderColor: (isOverWeight || isOverSecWeight) ? '#ef4444' : '#e2e8f0' }} />
-                    <input type="number" placeholder="اللفات" value={item.rolls_count} min="1"
-                      onChange={e => updateSaleItem(i, 'rolls_count', e.target.value)}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem', borderColor: isOverJardRolls ? '#ef4444' : '#e2e8f0' }} />
-                    <input type="number" placeholder="السعر" value={item.price} min="0" step="0.01"
-                      onChange={e => updateSaleItem(i, 'price', e.target.value)}
-                      style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }} />
-                    <button type="button" onClick={() => removeSaleItem(i)}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}
-                      title="حذف هذا البند">
-                      <Trash2 size={15} />
-                    </button>
+                      {/* Product Selector */}
+                      <select value={item.inventory_id}
+                        onChange={e => {
+                          const val = e.target.value;
+                          updateSaleItem(i, 'inventory_id', val);
+                          if (itemSource === 'jard') {
+                            const jItem = jardList.find(x => String(x.id) === String(val));
+                            if (jItem && !item.section_id && jItem.section_id) {
+                              updateSaleItem(i, 'section_id', String(jItem.section_id));
+                            }
+                          } else {
+                            const inv = productsForSection.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val))
+                              || inventoryList.find(x => String(x.sample_id) === String(val) || String(x.id) === String(val));
+                            if (inv) {
+                              if (inv.price_per_kg && !item.price) {
+                                updateSaleItem(i, 'price', inv.price_per_kg);
+                              }
+                              if (!item.section_id && inv.section_id) {
+                                updateSaleItem(i, 'section_id', String(inv.section_id));
+                              }
+                            }
+                          }
+                        }}
+                        style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}>
+                        <option value="">
+                          {itemSource === 'jard'
+                            ? (productsForSection.length === 0 ? '-- لا توجد أصناف متاحة بالجرد لهذا القسم --' : '-- اختر صنف الجرد --')
+                            : (item.section_id && productsForSection.length === 0
+                              ? '-- لا توجد أصناف مربوطة بهذا القسم --'
+                              : '-- اختر الصنف / المنتج --')}
+                        </option>
+                        {itemSource === 'jard' ? (
+                          productsForSection.map(j => (
+                            <option key={j.id} value={j.id}>
+                              [قسم: {j.section_name || 'عام'}] {j.product} ({j.company || 'عام'}) — المتاح: {j.available_rolls} لفة{Number(j.available_weight) > 0 ? ` | ${fmt(j.available_weight)} كجم` : ''}
+                            </option>
+                          ))
+                        ) : (
+                          productsForSection.map(inv => {
+                            const w = Number(inv.total_available_weight ?? inv.available_quantity ?? inv.remaining_weight ?? 0);
+                            const r = Number(inv.total_available_rolls ?? Math.max(0, Number(inv.available_rolls ?? (Number(inv.count || 0) - Number(inv.issued_rolls || 0)))));
+                            const key = inv.sample_id ?? inv.id;
+                            const displayLabel = item.section_id
+                              ? (r > 0 ? `${inv.product} — (${r} لفة)` : inv.product)
+                              : (w > 0 ? `${inv.product} — متاح: ${w.toFixed(2)} كجم | ${r} لفة` : inv.product);
+                            return (
+                              <option key={key} value={key}>
+                                {displayLabel}
+                              </option>
+                            );
+                          })
+                        )}
+                      </select>
+
+                      <input
+                        type="number"
+                        placeholder={item.is_issue_only || itemSource === 'jard' ? 'الوزن (اختياري)' : 'الوزن كجم'}
+                        value={item.weight}
+                        min="0"
+                        step="0.001"
+                        onChange={e => updateSaleItem(i, 'weight', e.target.value)}
+                        style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem', borderColor: (isOverWeight || isOverSecWeight) ? '#ef4444' : '#e2e8f0' }}
+                      />
+                      <input
+                        type="number"
+                        placeholder="اللفات (اختياري)"
+                        value={item.rolls_count}
+                        min="0"
+                        onChange={e => updateSaleItem(i, 'rolls_count', e.target.value)}
+                        style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem', borderColor: isOverJardRolls ? '#ef4444' : '#e2e8f0' }}
+                      />
+                      <input
+                        type="number"
+                        placeholder={item.is_issue_only || itemSource === 'jard' ? 'السعر (اختياري)' : 'السعر'}
+                        value={item.price}
+                        min="0"
+                        step="0.01"
+                        onChange={e => updateSaleItem(i, 'price', e.target.value)}
+                        style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                      />
+                      <button type="button" onClick={() => removeSaleItem(i)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}
+                        title="حذف هذا البند">
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+
+                    {/* Issue line item toggle & option */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginTop: 4, padding: '2px 4px' }}>
+                      <label style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        cursor: 'pointer',
+                        fontSize: '0.78rem',
+                        color: item.is_issue_only ? '#0369a1' : '#64748b',
+                        fontWeight: item.is_issue_only ? 700 : 500,
+                        background: item.is_issue_only ? '#f0f9ff' : 'transparent',
+                        padding: '2px 8px',
+                        borderRadius: 6,
+                        border: item.is_issue_only ? '1px solid #bae6fd' : '1px solid transparent',
+                        transition: 'all 0.15s ease'
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(item.is_issue_only)}
+                          onChange={e => updateSaleItem(i, 'is_issue_only', e.target.checked)}
+                        />
+                        <span>تسجيل كبند صرف (خروج كمية بدون سعر/وزن)</span>
+                      </label>
+
+                      {(item.is_issue_only || (itemSource === 'jard' && (!parseFloat(item.price) || !parseFloat(item.weight)))) && (
+                        <span style={{ fontSize: '0.74rem', color: '#0369a1', background: '#e0f2fe', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>
+                          🏷️ بند صرف: إخراج {item.rolls_count > 0 ? `${item.rolls_count} لفة` : ''}{item.rolls_count > 0 && parseFloat(item.weight) > 0 ? ' و ' : ''}{parseFloat(item.weight) > 0 ? `${fmt(item.weight)} كجم` : ''}{!item.rolls_count && !parseFloat(item.weight) ? 'كمية' : ''} بدون تكلفة مالية
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Stock & Section / Jard availability indicator & warnings */}
+                    {itemSource === 'jard' && selectedJard ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4, paddingRight: 4, fontSize: '0.74rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ color: '#0284c7', fontWeight: 700 }}>
+                            📋 رصيد الجرد المتاح: <strong>{selectedJard.available_rolls} لفة</strong> ({fmt(selectedJard.available_weight)} كجم)
+                          </span>
+                          {selectedJard.company && (
+                            <span style={{ color: '#64748b' }}>[{selectedJard.company}]</span>
+                          )}
+                        </div>
+                        {isOverJardRolls && (
+                          <div style={{ color: '#dc2626', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <AlertTriangle size={13} /> تحذير: عدد اللفات المطلوب ({item.rolls_count} لفة) يتجاوز رصيد الجرد المتاح ({selectedJard.available_rolls} لفة)!
+                          </div>
+                        )}
+                      </div>
+                    ) : (selectedInv || selectedSec) && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4, paddingRight: 4, fontSize: '0.74rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                          {selectedSec ? (
+                            <span style={{ color: '#7c3aed', fontWeight: 700 }}>
+                              🏷️ رصيد قسم ({selectedSec.name}): <strong>{secAvail.toFixed(2)} كجم متاح</strong>
+                            </span>
+                          ) : selectedInv && (
+                            <span style={{ color: '#0369a1', fontWeight: 600 }}>
+                              📦 المتاح بالصنف بالمخزن: <strong>{availW.toFixed(2)} كجم</strong> ({availR} لفة)
+                            </span>
+                          )}
+                        </div>
+                        {isOverSecWeight && (
+                          <div style={{ color: '#dc2626', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <AlertTriangle size={13} /> خطأ: الوزن المطلوب ({item.weight} كجم) يتجاوز وزن القسم المتاح ({secAvail.toFixed(2)} كجم)! سيتم إيقاف العملية.
+                          </div>
+                        )}
+                        {!selectedSec && isOverWeight && (
+                          <span style={{ color: '#dc2626', fontWeight: 700 }}>
+                            ⚠️ الوزن المدخل ({item.weight} كجم) يتجاوز المتاح بالصنف بالمخزن ({availW.toFixed(2)} كجم)!
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
-
-                  {/* Stock & Section / Jard availability indicator & warnings */}
-                  {deductionSource === 'jard' && selectedJard ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4, paddingRight: 4, fontSize: '0.74rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <span style={{ color: '#0284c7', fontWeight: 700 }}>
-                          📋 رصيد الجرد المتاح: <strong>{selectedJard.available_rolls} لفة</strong> ({fmt(selectedJard.available_weight)} كجم)
-                        </span>
-                        {selectedJard.company && (
-                          <span style={{ color: '#64748b' }}>[{selectedJard.company}]</span>
-                        )}
-                      </div>
-                      {isOverJardRolls && (
-                        <div style={{ color: '#dc2626', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <AlertTriangle size={13} /> تحذير: عدد اللفات المطلوب ({item.rolls_count || 1} لفة) يتجاوز رصيد الجرد المتاح ({selectedJard.available_rolls} لفة)!
-                        </div>
-                      )}
-                    </div>
-                  ) : (selectedInv || selectedSec) && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4, paddingRight: 4, fontSize: '0.74rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-                        {selectedSec ? (
-                          <span style={{ color: '#7c3aed', fontWeight: 700 }}>
-                            🏷️ رصيد قسم ({selectedSec.name}): <strong>{secAvail.toFixed(2)} كجم متاح</strong>
-                          </span>
-                        ) : selectedInv && (
-                          <span style={{ color: '#0369a1', fontWeight: 600 }}>
-                            📦 المتاح بالصنف بالمخزن: <strong>{availW.toFixed(2)} كجم</strong> ({availR} لفة)
-                          </span>
-                        )}
-                      </div>
-                      {isOverSecWeight && (
-                        <div style={{ color: '#dc2626', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <AlertTriangle size={13} /> خطأ: الوزن المطلوب ({item.weight} كجم) يتجاوز وزن القسم المتاح ({secAvail.toFixed(2)} كجم)! سيتم إيقاف العملية.
-                        </div>
-                      )}
-                      {!selectedSec && isOverWeight && (
-                        <span style={{ color: '#dc2626', fontWeight: 700 }}>
-                          ⚠️ الوزن المدخل ({item.weight} كجم) يتجاوز المتاح بالصنف بالمخزن ({availW.toFixed(2)} كجم)!
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
+                );
+              })
+            )}
           </div>
         </div>
       </div>
@@ -1700,94 +1846,94 @@ const SaleForm = ({
         {saleReturns.length > 0 && (
           <div className="pos-table-scroll" style={{ border: '1px solid #fed7aa', borderRadius: 8 }}>
             <div className="pos-returns-table">
-            <div className="pos-returns-row" style={{
-              background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '7px 10px',
-              fontSize: '0.74rem', fontWeight: 700, color: '#9a3412'
-            }}>
-              <span>اسم الصنف المرتجع *</span>
-              <span>المخزون المراد الإضافة إليه</span>
-              <span>الوزن (طن)</span>
-              <span>اللفات</span>
-              <span>سعر الطن (ج)</span>
-              <span>إجمالي المرتجع</span>
-              <span></span>
-            </div>
-
-            {saleReturns.map((ret, idx) => (
-              <div key={idx} className="pos-returns-row" style={{
-                padding: '8px 10px',
-                borderBottom: idx < saleReturns.length - 1 ? '1px solid #ffedd5' : 'none',
-                background: '#fff'
+              <div className="pos-returns-row" style={{
+                background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '7px 10px',
+                fontSize: '0.74rem', fontWeight: 700, color: '#9a3412'
               }}>
-                <input
-                  type="text"
-                  placeholder="اسم الصنف المرتجع"
-                  value={ret.product || ''}
-                  onChange={e => updateSaleReturn(idx, 'product', e.target.value)}
-                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
-                />
-
-                <select
-                  value={ret.inventory_id}
-                  onChange={e => updateSaleReturn(idx, 'inventory_id', e.target.value)}
-                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
-                >
-                  <option value="">-- اختر مخزون الإضافة --</option>
-                  {inventoryList.map((inv, invIdx) => {
-                    const w = Number(inv.total_available_weight ?? inv.available_quantity ?? inv.remaining_weight ?? 0);
-                    const companyLabel = inv.company ? ` (${inv.company})` : '';
-                    return (
-                      <option key={inv.sample_id || inv.id || invIdx} value={inv.sample_id || inv.id}>
-                        {inv.product}{companyLabel} {w > 0 ? `— رصيد حالي: ${w.toFixed(2)} كجم` : '— (إضافة وزيادة للمخزن)'}
-                      </option>
-                    );
-                  })}
-                </select>
-
-                <input
-                  type="number"
-                  placeholder="الوزن طن"
-                  step="0.001"
-                  min="0"
-                  value={ret.weight}
-                  onChange={e => updateSaleReturn(idx, 'weight', e.target.value)}
-                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
-                />
-
-                <input
-                  type="number"
-                  placeholder="اللفات"
-                  step="1"
-                  min="0"
-                  value={ret.rolls_count || ''}
-                  onChange={e => updateSaleReturn(idx, 'rolls_count', e.target.value)}
-                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
-                />
-
-                <input
-                  type="number"
-                  placeholder="سعر الطن"
-                  step="0.01"
-                  min="0"
-                  value={ret.price_per_ton}
-                  onChange={e => updateSaleReturn(idx, 'price_per_ton', e.target.value)}
-                  style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
-                />
-
-                <div style={{ fontWeight: 800, color: '#dc2626', fontSize: '0.84rem', textAlign: 'center' }}>
-                  {fmt(ret.total)} ج
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => removeSaleReturn(idx)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 4, display: 'flex', alignItems: 'center' }}
-                  title="حذف هذا المرتجع"
-                >
-                  <Trash2 size={15} />
-                </button>
+                <span>اسم الصنف المرتجع *</span>
+                <span>المخزون المراد الإضافة إليه</span>
+                <span>الوزن (كجم)</span>
+                <span>اللفات</span>
+                <span>سعر الكجم (ج)</span>
+                <span>إجمالي المرتجع</span>
+                <span></span>
               </div>
-            ))}
+
+              {saleReturns.map((ret, idx) => (
+                <div key={idx} className="pos-returns-row" style={{
+                  padding: '8px 10px',
+                  borderBottom: idx < saleReturns.length - 1 ? '1px solid #ffedd5' : 'none',
+                  background: '#fff'
+                }}>
+                  <input
+                    type="text"
+                    placeholder="اسم الصنف المرتجع"
+                    value={ret.product || ''}
+                    onChange={e => updateSaleReturn(idx, 'product', e.target.value)}
+                    style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                  />
+
+                  <select
+                    value={ret.inventory_id}
+                    onChange={e => updateSaleReturn(idx, 'inventory_id', e.target.value)}
+                    style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                  >
+                    <option value="">-- اختر مخزون الإضافة --</option>
+                    {inventoryList.map((inv, invIdx) => {
+                      const w = Number(inv.total_available_weight ?? inv.available_quantity ?? inv.remaining_weight ?? 0);
+                      const companyLabel = inv.company ? ` (${inv.company})` : '';
+                      return (
+                        <option key={inv.sample_id || inv.id || invIdx} value={inv.sample_id || inv.id}>
+                          {inv.product}{companyLabel} {w > 0 ? `— رصيد حالي: ${w.toFixed(2)} كجم` : '— (إضافة وزيادة للمخزن)'}
+                        </option>
+                      );
+                    })}
+                  </select>
+
+                  <input
+                    type="number"
+                    placeholder="الوزن"
+                    step="0.001"
+                    min="0"
+                    value={ret.weight}
+                    onChange={e => updateSaleReturn(idx, 'weight', e.target.value)}
+                    style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                  />
+
+                  <input
+                    type="number"
+                    placeholder="اللفات"
+                    step="1"
+                    min="0"
+                    value={ret.rolls_count || ''}
+                    onChange={e => updateSaleReturn(idx, 'rolls_count', e.target.value)}
+                    style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                  />
+
+                  <input
+                    type="number"
+                    placeholder="سعر الوزن"
+                    step="0.01"
+                    min="0"
+                    value={ret.price_per_ton}
+                    onChange={e => updateSaleReturn(idx, 'price_per_ton', e.target.value)}
+                    style={{ ...fieldStyle, padding: '7px 8px', fontSize: '0.82rem' }}
+                  />
+
+                  <div style={{ fontWeight: 800, color: '#dc2626', fontSize: '0.84rem', textAlign: 'center' }}>
+                    {fmt(ret.total)} ج
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => removeSaleReturn(idx)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 4, display: 'flex', alignItems: 'center' }}
+                    title="حذف هذا المرتجع"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -1951,9 +2097,9 @@ const SaleForm = ({
         {(() => {
           const hasBank = isMultiPayment
             ? salePayments.some(p => {
-                const pt = paymentTypes.find(x => String(x.id) === String(p.payment_type_id));
-                return pt?.channel === 'bank';
-              })
+              const pt = paymentTypes.find(x => String(x.id) === String(p.payment_type_id));
+              return pt?.channel === 'bank';
+            })
             : paymentTypes.find(p => String(p.id) === String(saleForm.payment_type_id))?.channel === 'bank';
 
           if (!hasBank || salePaid <= 0) return null;
@@ -1980,7 +2126,7 @@ const SaleForm = ({
 
           {saleReturnsTotal > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: '#dc2626', fontWeight: 700 }}>
-              <span>خصم المرتجع (حاصل ضرب الوزن × سعر الطن):</span>
+              <span>خصم المرتجع (حاصل ضرب الوزن × سعر الوزن):</span>
               <strong>- {fmt(saleReturnsTotal)} ج.م</strong>
             </div>
           )}
@@ -2288,13 +2434,13 @@ const UnifiedStoreForm = ({
         </div>
         <div className="pos-grid-2-col" style={{ marginBottom: 8 }}>
           <div>
-            <label style={{ ...labelStyle, color: '#2563eb', fontWeight: 800 }}>سعر الطن (ج.م) - اختياري</label>
+            <label style={{ ...labelStyle, color: '#2563eb', fontWeight: 800 }}>سعر الوزن (ج.م) - اختياري</label>
             <input type="number" placeholder="مثال: 45000" value={purchaseForm.price_per_ton} min="0" step="0.01"
               onChange={e => updatePurchaseField('price_per_ton', e.target.value)}
               style={{ ...fieldStyle, borderColor: '#93c5fd', background: '#eff6ff', fontWeight: 700, fontSize: '0.95rem' }} />
           </div>
           <div>
-            <label style={{ ...labelStyle, color: '#0f4c81', fontWeight: 800 }}>إجمالي الفاتورة (سعر الطن × الوزن) *</label>
+            <label style={{ ...labelStyle, color: '#0f4c81', fontWeight: 800 }}>إجمالي الفاتورة (سعر الوزن × الوزن) *</label>
             <input type="number" placeholder="0.00" value={purchaseForm.total} min="0" step="0.01"
               onChange={e => updatePurchaseField('total', e.target.value)}
               style={{ ...fieldStyle, borderColor: '#0f4c81', background: '#f0f9ff', fontWeight: 800, fontSize: '0.95rem', color: '#0f4c81' }} required />
@@ -2552,37 +2698,37 @@ const ExpenseForm = ({
       ) : (
         <div className="pos-table-scroll" style={{ border: '1.5px solid #fde68a', borderRadius: 10, marginBottom: 14 }}>
           <div className="pos-expense-items-table">
-          <div className="pos-expense-items-row" style={{
-            background: '#fffbeb', padding: '6px 10px', fontSize: '0.72rem', fontWeight: 700, color: '#92400e', borderBottom: '1px solid #fde68a'
-          }}>
-            <span>الوصف</span><span>المبلغ</span><span></span>
-          </div>
-          {expenseItems.map((item, i) => (
-            <div key={i} className="pos-expense-items-row" style={{
-              borderBottom: i < expenseItems.length - 1 ? '1px solid #fef9c3' : 'none', padding: '6px 10px'
+            <div className="pos-expense-items-row" style={{
+              background: '#fffbeb', padding: '6px 10px', fontSize: '0.72rem', fontWeight: 700, color: '#92400e', borderBottom: '1px solid #fde68a'
             }}>
-              <input type="text" placeholder="وصف البند..." value={item.description}
-                onChange={e => updateExpenseItem(i, 'description', e.target.value)}
-                list="exp-desc-list" style={{ ...fieldStyle, padding: '6px 8px', fontSize: '0.82rem' }} />
-              <input type="number" placeholder="المبلغ" value={item.amount} min="0" step="0.01"
-                onChange={e => updateExpenseItem(i, 'amount', e.target.value)}
-                style={{ ...fieldStyle, padding: '6px 8px', fontSize: '0.82rem' }} />
-              <button type="button" onClick={() => removeExpenseItem(i)}
-                disabled={expenseItems.length === 1}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}>
-                <Trash2 size={14} />
+              <span>الوصف</span><span>المبلغ</span><span></span>
+            </div>
+            {expenseItems.map((item, i) => (
+              <div key={i} className="pos-expense-items-row" style={{
+                borderBottom: i < expenseItems.length - 1 ? '1px solid #fef9c3' : 'none', padding: '6px 10px'
+              }}>
+                <input type="text" placeholder="وصف البند..." value={item.description}
+                  onChange={e => updateExpenseItem(i, 'description', e.target.value)}
+                  list="exp-desc-list" style={{ ...fieldStyle, padding: '6px 8px', fontSize: '0.82rem' }} />
+                <input type="number" placeholder="المبلغ" value={item.amount} min="0" step="0.01"
+                  onChange={e => updateExpenseItem(i, 'amount', e.target.value)}
+                  style={{ ...fieldStyle, padding: '6px 8px', fontSize: '0.82rem' }} />
+                <button type="button" onClick={() => removeExpenseItem(i)}
+                  disabled={expenseItems.length === 1}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            <div style={{ padding: '8px 10px', background: '#fffbeb', borderTop: '1px solid #fde68a' }}>
+              <button type="button" onClick={addExpenseItem}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', fontWeight: 700,
+                  color: '#d97706', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit'
+                }}>
+                <Plus size={13} /> إضافة بند
               </button>
             </div>
-          ))}
-          <div style={{ padding: '8px 10px', background: '#fffbeb', borderTop: '1px solid #fde68a' }}>
-            <button type="button" onClick={addExpenseItem}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', fontWeight: 700,
-                color: '#d97706', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit'
-              }}>
-              <Plus size={13} /> إضافة بند
-            </button>
-          </div>
           </div>
         </div>
       )}

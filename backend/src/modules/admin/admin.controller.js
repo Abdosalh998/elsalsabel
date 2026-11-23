@@ -512,8 +512,8 @@ const getBranchCustody = async (req, res, next) => {
     const params = [branchId];
     let idx = 2;
     if (dateFrom) { where += ` AND c.date >= $${idx++}`; params.push(dateFrom); }
-    if (dateTo)   { where += ` AND c.date <= $${idx++}`; params.push(dateTo); }
-    if (type)     { where += ` AND c.type = $${idx++}`; params.push(type); }
+    if (dateTo) { where += ` AND c.date <= $${idx++}`; params.push(dateTo); }
+    if (type) { where += ` AND c.type = $${idx++}`; params.push(type); }
     if (search) {
       where += ` AND (c.person_name ILIKE $${idx} OR c.phone ILIKE $${idx} OR c.receipt_number ILIKE $${idx} OR c.notes ILIKE $${idx})`;
       params.push(`%${search.trim()}%`);
@@ -615,7 +615,10 @@ const getBranchSummary = async (req, res, next) => {
       pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total FROM purchases ${pWhere}`, params),
       pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total FROM expenses ${eWhere}`, params),
       pool.query(`SELECT COUNT(*) as count, COALESCE(SUM(customer_total - total_payments), 0) as total_debt FROM customers WHERE branch_id = $1 AND is_active = true`, [branchId]),
-      pool.query(`SELECT COUNT(*) as items_count, COALESCE(SUM(weight_quantity - COALESCE(issued_quantity, 0)), 0) as total_avail_w, COALESCE(SUM(total), 0) as total_val FROM inventory WHERE branch_id = $1`, [branchId]),
+      pool.query(`SELECT COUNT(*) as items_count, 
+        COALESCE(SUM(CASE WHEN section_id IS NULL THEN GREATEST(0, weight_quantity - COALESCE(issued_quantity, 0)) ELSE 0 END), 0) +
+        COALESCE((SELECT SUM(GREATEST(0, total_weight - issued_weight)) FROM inventory_sections WHERE branch_id = $1 AND is_active = true), 0) as total_avail_w, 
+        COALESCE(SUM(total), 0) as total_val FROM inventory WHERE branch_id = $1`, [branchId]),
       pool.query(`
         SELECT 
           COALESCE((SELECT SUM(amount) FROM treasury WHERE branch_id = $1), 0)

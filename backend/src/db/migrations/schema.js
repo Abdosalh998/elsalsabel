@@ -600,8 +600,63 @@ async function runMigrations() {
       ALTER TABLE sales ADD COLUMN IF NOT EXISTS deduction_source VARCHAR(30) DEFAULT 'general';
       ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS deduction_source VARCHAR(30) DEFAULT 'general';
       ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS jard_id INTEGER REFERENCES jard(id) ON DELETE SET NULL;
+      ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS is_issue_only BOOLEAN DEFAULT false;
       CREATE INDEX IF NOT EXISTS idx_sale_items_jard ON sale_items(jard_id);
     `).catch((e) => { console.error('Phase 14 (Jard) migration error:', e.message); });
+
+    // Phase 15: Stocktaking Module (موديول الجرد ومطابقة المخزن)
+    await client.query(`
+      -- جدول جلسات الجرد الرئيسية (stocktakes)
+      CREATE TABLE IF NOT EXISTS stocktakes (
+        id                      SERIAL PRIMARY KEY,
+        branch_id               INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+        stocktake_number        VARCHAR(50) NOT NULL,
+        date                    DATE NOT NULL DEFAULT CURRENT_DATE,
+        title                   VARCHAR(200) NOT NULL,
+        type                    VARCHAR(20) NOT NULL DEFAULT 'full' CHECK (type IN ('full', 'section')),
+        section_id              INTEGER REFERENCES inventory_sections(id) ON DELETE SET NULL,
+        status                  VARCHAR(20) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'in_progress', 'settled')),
+        auditor_name            VARCHAR(150),
+        notes                   TEXT,
+        total_items_counted     INTEGER DEFAULT 0,
+        total_system_weight     NUMERIC(15,3) DEFAULT 0,
+        total_actual_weight     NUMERIC(15,3) DEFAULT 0,
+        total_weight_diff       NUMERIC(15,3) DEFAULT 0,
+        total_rolls_diff        INTEGER DEFAULT 0,
+        total_financial_diff    NUMERIC(15,2) DEFAULT 0,
+        settled_at              TIMESTAMPTZ,
+        created_at              TIMESTAMPTZ DEFAULT NOW(),
+        updated_at              TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_stocktakes_branch ON stocktakes(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_stocktakes_date ON stocktakes(branch_id, date);
+      CREATE INDEX IF NOT EXISTS idx_stocktakes_status ON stocktakes(branch_id, status);
+
+      -- جدول بنود الجرد التفصيلية (stocktake_items)
+      CREATE TABLE IF NOT EXISTS stocktake_items (
+        id                SERIAL PRIMARY KEY,
+        stocktake_id      INTEGER NOT NULL REFERENCES stocktakes(id) ON DELETE CASCADE,
+        branch_id         INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+        inventory_id      INTEGER REFERENCES inventory(id) ON DELETE SET NULL,
+        section_id        INTEGER REFERENCES inventory_sections(id) ON DELETE SET NULL,
+        product           VARCHAR(150) NOT NULL,
+        company           VARCHAR(150),
+        unit_price        NUMERIC(15,2) DEFAULT 0,
+        system_weight     NUMERIC(15,3) DEFAULT 0,
+        system_rolls      INTEGER DEFAULT 0,
+        actual_weight     NUMERIC(15,3),
+        actual_rolls      INTEGER,
+        weight_diff       NUMERIC(15,3) DEFAULT 0,
+        rolls_diff        INTEGER DEFAULT 0,
+        financial_diff    NUMERIC(15,2) DEFAULT 0,
+        notes             TEXT,
+        created_at        TIMESTAMPTZ DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_stocktake_items_stocktake ON stocktake_items(stocktake_id);
+      CREATE INDEX IF NOT EXISTS idx_stocktake_items_branch ON stocktake_items(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_stocktake_items_inventory ON stocktake_items(inventory_id);
+    `).catch((e) => { console.error('Phase 15 (Stocktaking) migration error:', e.message); });
 
     console.log('✅ Migrations completed successfully.');
   } catch (err) {

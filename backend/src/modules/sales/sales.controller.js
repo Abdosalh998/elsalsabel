@@ -293,14 +293,22 @@ const addSale = async (req, res, next) => {
     // Process sold items
     for (const item of items) {
       const deduction_source = item.deduction_source || defaultDeductionSource;
-      const weight = Number(item.weight ?? item.quantity ?? 0);
-      const rolls_count = Number(item.rolls_count ?? item.count ?? 0);
-      const price = Number(item.price ?? item.unit_price ?? 0);
+      const is_issue_only = Boolean(item.is_issue_only || (deduction_source === 'jard' && (!item.price || !item.weight)));
+      const weight = Math.max(0, Number(item.weight ?? item.quantity ?? 0));
+      const rolls_count = Math.max(0, Number(item.rolls_count ?? item.count ?? 0));
+      const price = Math.max(0, Number(item.price ?? item.unit_price ?? 0));
 
-      if (weight <= 0 || price <= 0) {
-        throw new Error('يرجى تحديد المنتج وإدخال وزن وسعر صحيحين لكل صنف مباع');
+      if (!is_issue_only && deduction_source !== 'jard') {
+        if (weight <= 0 || price <= 0) {
+          throw new Error('يرجى تحديد المنتج وإدخال وزن وسعر صحيحين لكل صنف مباع');
+        }
+      } else {
+        // في بنود الصرف أو الجرد: الوزن والسعر اختياريان، ولكن يجب أن تكون اللفات أو الوزن أكبر من صفر
+        if (rolls_count <= 0 && weight <= 0) {
+          throw new Error('يرجى إدخال عدد اللفات أو الوزن للصنف');
+        }
       }
-      const lineTotal = weight * price;
+      const lineTotal = (weight > 0 && price > 0) ? (weight * price) : 0;
 
       if (deduction_source === 'jard') {
         const jard_id = item.jard_id || item.inventory_id;
@@ -315,8 +323,8 @@ const addSale = async (req, res, next) => {
 
         const jRow = jardRes.rows[0];
         const availR = Number(jRow.available_rolls || 0);
-        const reqRolls = rolls_count > 0 ? rolls_count : 1;
-        if (reqRolls > availR) {
+        const reqRolls = rolls_count > 0 ? rolls_count : 0;
+        if (reqRolls > 0 && reqRolls > availR) {
           throw new Error(`الرصيد المتاح في الجرد للصنف "${jRow.product}" (${availR} لفة) لا يكفي لخصم ${reqRolls} لفة`);
         }
 
@@ -324,12 +332,14 @@ const addSale = async (req, res, next) => {
           inventory_id: null,
           jard_id: jRow.id,
           productName: jRow.product,
+          company: jRow.company,
           weight,
           rolls_count: reqRolls,
           price,
           lineTotal,
           section_id: jRow.section_id || null,
-          deduction_source: 'jard'
+          deduction_source: 'jard',
+          is_issue_only
         });
       } else {
         const { inventory_id } = item;
@@ -347,34 +357,38 @@ const addSale = async (req, res, next) => {
         const invRow = invRes.rows[0];
         const productName = invRow.product;
         const secId = item.section_id || invRow.section_id || null;
-        if (secId) {
+        if (secId && weight > 0) {
           sectionDeductions[secId] = (sectionDeductions[secId] || 0) + weight;
         }
 
-        // Check TOTAL available weight for this product across all companies in this branch
-        const totalAvailRes = await client.query(
-          `SELECT COALESCE(SUM(available_quantity), 0) AS total_avail
+        // Check TOTAL available weight for this product across all companies in this branch (if not issue-only with 0 weight)
+        if (!is_issue_only && weight > 0) {
+          const totalAvailRes = await client.query(
+            `SELECT COALESCE(SUM(available_quantity), 0) AS total_avail
            FROM inventory
            WHERE branch_id = $1 AND LOWER(TRIM(product)) = LOWER(TRIM($2))`,
-          [branch_id, productName]
-        );
-        const totalAvailableWeight = Number(totalAvailRes.rows[0].total_avail);
+            [branch_id, productName]
+          );
+          const totalAvailableWeight = Number(totalAvailRes.rows[0].total_avail);
 
-        // إذا كان الصنف تابعاً لقسم فالتحقق يكون على رصيد القسم لاحقاً وليس على رصيد الصنف الفردي
-        if (!secId && weight > totalAvailableWeight) {
-          throw new Error(`الوزن المطلوب من "${productName}" (${weight} كج) يتجاوز إجمالي الوزن المتاح بالمخزن (${totalAvailableWeight.toFixed(2)} كج)`);
+          // إذا كان الصنف تابعاً لقسم فالتحقق يكون على رصيد القسم لاحقاً وليس على رصيد الصنف الفردي
+          if (!secId && weight > totalAvailableWeight) {
+            throw new Error(`الوزن المطلوب من "${productName}" (${weight} كج) يتجاوز إجمالي الوزن المتاح بالمخزن (${totalAvailableWeight.toFixed(2)} كج)`);
+          }
         }
 
         processedItems.push({
           inventory_id,
           jard_id: null,
           productName,
+          company: invRow.company,
           weight,
-          rolls_count,
+          rolls_count: rolls_count || 0,
           price,
           lineTotal,
           section_id: secId,
-          deduction_source: 'general'
+          deduction_source: 'general',
+          is_issue_only
         });
       }
       grossTotal += lineTotal;
@@ -408,7 +422,7 @@ const addSale = async (req, res, next) => {
       if (weight <= 0 || price_per_ton <= 0) {
         throw new Error('يرجى إدخال وزن وسعر طن صحيحين لكل صنف مرتجع');
       }
-      const lineReturnTotal = weight * price_per_ton; // حاصل ضرب الوزن في سعر الطن
+      const lineReturnTotal = weight * price_per_ton; // حاصل ضرب الوزن في سعر الوزن
 
       let retInvId = ret.inventory_id && !isNaN(Number(ret.inventory_id)) ? Number(ret.inventory_id) : null;
       let retProduct = (ret.product || '').trim();
@@ -617,9 +631,9 @@ const addSale = async (req, res, next) => {
       if (item.deduction_source === 'jard') {
         // الصنف مباع من رصيد الجرد المستقل
         await client.query(
-          `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id, deduction_source, jard_id)
-           VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, 'jard', $10)`,
-          [saleId, branch_id, item.weight, item.price, item.lineTotal, item.weight, item.rolls_count, item.price, item.section_id, item.jard_id]
+          `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id, deduction_source, jard_id, is_issue_only)
+           VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, 'jard', $10, $11)`,
+          [saleId, branch_id, item.weight, item.price, item.lineTotal, item.weight, item.rolls_count, item.price, item.section_id, item.jard_id, item.is_issue_only]
         );
 
         // تحديث صادر الجرد
@@ -636,20 +650,45 @@ const addSale = async (req, res, next) => {
         await client.query(
           `INSERT INTO jard_movements (branch_id, jard_id, date, type, source, rolls, weight, reference_id, notes)
            VALUES ($1, $2, $3, 'outgoing', 'pos', $4, $5, $6, $7)`,
-          [branch_id, item.jard_id, date, item.rolls_count, item.weight, saleId, `مبيعات فاتورة رقم #${invoice_number}`]
+          [branch_id, item.jard_id, date, item.rolls_count, item.weight, saleId, `مبيعات فاتورة رقم #${invoice_number}${item.is_issue_only ? ' (بند صرف)' : ''}`]
         );
+
+        // تحديث اللفات والوزن المنصرف في المخزن أيضاً لضمان المزامنة التلقائية
+        try {
+          const matchInv = await client.query(`
+            SELECT id FROM inventory
+            WHERE branch_id = $1
+              AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM(COALESCE($2, '')))
+              AND LOWER(TRIM(product)) = LOWER(TRIM($3))
+            ORDER BY (section_id = $4) DESC, id DESC
+            LIMIT 1
+          `, [branch_id, item.company, item.productName, item.section_id]);
+
+          if (matchInv.rows.length > 0) {
+            await client.query(`
+              UPDATE inventory
+              SET issued_rolls = COALESCE(issued_rolls, 0) + $1,
+                  issued_quantity = COALESCE(issued_quantity, 0) + $2,
+                  updated_at = NOW()
+              WHERE id = $3
+            `, [item.rolls_count, item.weight, matchInv.rows[0].id]);
+          }
+        } catch (invSyncErr) {
+          console.error('Error reflecting POS Jard sale to inventory:', invSyncErr);
+        }
       } else if (item.section_id) {
         // الصنف مباع من قسم: يُسجل بند البيع بالكامل بالوزن واللفات والقيمة الفعلية
         await client.query(
-          `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-          [saleId, branch_id, item.inventory_id, item.weight, item.price, item.lineTotal, item.weight, item.rolls_count, item.price, item.section_id]
+          `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id, deduction_source, is_issue_only)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'general', $11)`,
+          [saleId, branch_id, item.inventory_id, item.weight, item.price, item.lineTotal, item.weight, item.rolls_count, item.price, item.section_id, item.is_issue_only]
         );
-        // نسجل في المخزن اللفات المنصرفة إن أدخلت
+        // نسجل في المخزن اللفات المنصرفة إن أدخلت (الوزن تم خصمه بالفعل من رصيد القسم inventory_sections)
         if (item.rolls_count > 0) {
           await client.query(
             `UPDATE inventory 
-             SET issued_rolls = COALESCE(issued_rolls, 0) + $1, updated_at = NOW()
+             SET issued_rolls = COALESCE(issued_rolls, 0) + $1,
+                 updated_at = NOW()
              WHERE id = $2`,
             [item.rolls_count, item.inventory_id]
           );
@@ -670,9 +709,9 @@ const addSale = async (req, res, next) => {
 
         if (fifoRows.rows.length === 0) {
           await client.query(
-            `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [saleId, branch_id, item.inventory_id, item.weight, item.price, item.lineTotal, item.weight, item.rolls_count, item.price, null]
+            `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id, deduction_source, is_issue_only)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, 'general', $10)`,
+            [saleId, branch_id, item.inventory_id, item.weight, item.price, item.lineTotal, item.weight, item.rolls_count, item.price, item.is_issue_only]
           );
           await client.query(
             `UPDATE inventory 
@@ -680,6 +719,21 @@ const addSale = async (req, res, next) => {
                  issued_rolls = COALESCE(issued_rolls, 0) + $2
              WHERE id = $3`,
             [item.weight, item.rolls_count, item.inventory_id]
+          );
+        } else if (remainingWeight <= 0 && remainingRolls > 0) {
+          // صرف لفات فقط بدون وزن
+          const fRow = fifoRows.rows[0];
+          await client.query(
+            `UPDATE inventory 
+             SET issued_rolls = COALESCE(issued_rolls, 0) + $1,
+                 updated_at = NOW()
+             WHERE id = $2`,
+            [remainingRolls, fRow.id]
+          );
+          await client.query(
+            `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id, deduction_source, is_issue_only)
+             VALUES ($1, $2, $3, 0, $4, 0, 0, $5, $6, NULL, 'general', $7)`,
+            [saleId, branch_id, fRow.id, item.price, remainingRolls, item.price, item.is_issue_only]
           );
         } else {
           for (const fRow of fifoRows.rows) {
@@ -701,9 +755,9 @@ const addSale = async (req, res, next) => {
             );
 
             await client.query(
-              `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-              [saleId, branch_id, fRow.id, deductW, item.price, deductTotal, deductW, deductR, item.price, null]
+              `INSERT INTO sale_items (sale_id, branch_id, inventory_id, quantity, unit_price, total, weight, rolls_count, price, section_id, deduction_source, is_issue_only)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, 'general', $10)`,
+              [saleId, branch_id, fRow.id, deductW, item.price, deductTotal, deductW, deductR, item.price, item.is_issue_only]
             );
 
             remainingWeight -= deductW;
@@ -744,9 +798,11 @@ const addSale = async (req, res, next) => {
         [branch_id, saleId, customer_id, ret.inventory_id, date, ret.product, ret.company, ret.weight, ret.rolls_count, ret.price_per_ton, ret.total, ret.notes, shouldAddExcess]
       );
       // Check if inventory item belongs to a section and restore section weight
+      let isSecItem = false;
       if (ret.inventory_id) {
         const invRow = await client.query(`SELECT section_id FROM inventory WHERE id = $1`, [ret.inventory_id]);
         if (invRow.rows[0]?.section_id) {
+          isSecItem = true;
           await client.query(
             `UPDATE inventory_sections
              SET issued_weight = GREATEST(0, issued_weight - $1), updated_at = NOW()
@@ -755,14 +811,14 @@ const addSale = async (req, res, next) => {
           );
         }
       }
-      // Add weight and rolls count to inventory
+      // Add weight and rolls count to inventory (إذا كان الصنف بقسم فالوزن تم إعادته لرصيد القسم)
       await client.query(
         `UPDATE inventory 
          SET weight_quantity = weight_quantity + $1,
              count = count + $2,
              updated_at = NOW()
          WHERE id = $3`,
-        [ret.weight, ret.rolls_count, ret.inventory_id]
+        [isSecItem ? 0 : ret.weight, ret.rolls_count, ret.inventory_id]
       );
     }
 
@@ -858,6 +914,12 @@ const deleteSale = async (req, res, next) => {
 
       if (item.deduction_source === 'jard' && item.jard_id) {
         // استرجاع رصيد الجرد المستقل
+        const jItemRes = await client.query(
+          `SELECT company, product, section_id FROM jard WHERE id = $1`,
+          [item.jard_id]
+        );
+        const jItem = jItemRes.rows[0];
+
         await client.query(
           `UPDATE jard
            SET outgoing_rolls = GREATEST(0, outgoing_rolls - $1),
@@ -870,6 +932,27 @@ const deleteSale = async (req, res, next) => {
           `DELETE FROM jard_movements WHERE reference_id = $1 AND source = 'pos' AND jard_id = $2`,
           [id, item.jard_id]
         );
+
+        if (jItem) {
+          try {
+            await client.query(`
+              UPDATE inventory
+              SET issued_rolls = GREATEST(0, COALESCE(issued_rolls, 0) - $1),
+                  issued_quantity = GREATEST(0, COALESCE(issued_quantity, 0) - $2),
+                  updated_at = NOW()
+              WHERE id = (
+                SELECT id FROM inventory
+                WHERE branch_id = $3
+                  AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM(COALESCE($4, '')))
+                  AND LOWER(TRIM(product)) = LOWER(TRIM($5))
+                ORDER BY (section_id = $6) DESC, id DESC
+                LIMIT 1
+              )
+            `, [r, w, branch_id, jItem.company, jItem.product, jItem.section_id]);
+          } catch (invRevErr) {
+            console.error('Error reverting inventory from deleted Jard sale:', invRevErr);
+          }
+        }
       } else {
         await client.query(
           `UPDATE inventory 

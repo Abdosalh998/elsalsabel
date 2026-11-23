@@ -39,6 +39,11 @@ export const jardService = {
   getJardForPOS: async () => {
     const { data } = await api.get('/jard/pos');
     return data;
+  },
+
+  syncWithInventory: async () => {
+    const { data } = await api.post('/jard/sync');
+    return data;
   }
 };
 

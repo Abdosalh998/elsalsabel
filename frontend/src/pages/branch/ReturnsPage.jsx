@@ -207,7 +207,7 @@ const ReturnsPage = () => {
       render: (row) => row.company ? <span style={{ color: '#475569' }}>{row.company}</span> : '-'
     },
     {
-      label: 'الوزن (طن)',
+      label: 'الوزن (كجم)',
       key: 'weight',
       render: (row) => (
         <span style={{ color: '#0369a1', fontWeight: 800 }}>
@@ -225,7 +225,7 @@ const ReturnsPage = () => {
       ) : <span style={{ color: '#94a3b8' }}>-</span>
     },
     {
-      label: 'سعر طن (ج)',
+      label: 'سعر كجم (ج)',
       key: 'price_per_ton',
       render: (row) => fmt(row.price_per_ton)
     },
@@ -533,7 +533,7 @@ const ReturnsPage = () => {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
             <div>
-              <label style={labelStyle}>الوزن (طن) *</label>
+              <label style={labelStyle}>الوزن (كجم) *</label>
               <input
                 type="number"
                 step="0.001"
@@ -558,7 +558,7 @@ const ReturnsPage = () => {
               />
             </div>
             <div>
-              <label style={labelStyle}>سعر الطن (ج) *</label>
+              <label style={labelStyle}>سعر الكجم (ج) *</label>
               <input
                 type="number"
                 step="0.01"

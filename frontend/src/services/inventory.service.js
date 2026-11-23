@@ -70,5 +70,10 @@ export const inventoryService = {
   getSectionsWithItems: async () => {
     const { data } = await api.get('/inventory/sections/with-items');
     return data;
+  },
+
+  addSectionWeight: async (id, payload) => {
+    const { data } = await api.post(`/inventory/sections/${id}/add-weight`, payload);
+    return data;
   }
 };

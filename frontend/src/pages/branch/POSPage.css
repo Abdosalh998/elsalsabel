@@ -171,12 +171,12 @@
 }
 
 .pos-sale-items-table {
-  min-width: 620px;
+  min-width: 760px;
 }
 
 .pos-sale-items-row {
   display: grid;
-  grid-template-columns: 135px 1.2fr 85px 65px 85px 32px;
+  grid-template-columns: 110px 125px 1.2fr 85px 65px 85px 32px;
   gap: 8px;
   align-items: center;
 }

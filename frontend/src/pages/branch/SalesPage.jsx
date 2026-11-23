@@ -13,7 +13,7 @@ import ConfirmModal from '../../components/common/ConfirmModal';
 import PrintableInvoice from '../../components/sales/PrintableInvoice';
 import PartyPicker from '../../components/common/PartyPicker';
 
-const EMPTY_ITEM = { inventory_id: '', weight: '', rolls_count: '1', price: '' };
+const EMPTY_ITEM = { inventory_id: '', weight: '', rolls_count: '', price: '' };
 
 const SalesPage = () => {
   const { user } = useAuth();
@@ -126,20 +126,31 @@ const SalesPage = () => {
         phone: '',
         isNewCustomer: false,
         saveNewCustomer: true,
-        paid_amount: 0,
-        payment_type_id: '',
+        paid_amount: sale.cash_paid || sale.paid_amount || '',
+        payment_type_id: sale.payment_type_id || '',
         notes: sale.notes || '',
         use_customer_credit: true,
         receipt_image: sale.receipt_image || null
       });
       const cust = customers.find(c => c.id === sale.customer_id);
       setSelectedCustomerDetails(cust || null);
+      if (sale.payments && sale.payments.length > 1) {
+        setIsMultiPayment(true);
+        setSalePayments(sale.payments.map(p => ({
+          payment_type_id: String(p.payment_type_id || ''),
+          amount: String(p.amount || ''),
+          notes: p.notes || ''
+        })));
+      } else {
+        setIsMultiPayment(false);
+        setSalePayments([{ payment_type_id: '', amount: '', notes: '' }]);
+      }
       // Rebuild items from sale.items
       const saleItems = (sale.items && sale.items.length > 0)
         ? sale.items.map(i => ({
             inventory_id: String(i.inventory_id),
             weight: String(i.weight ?? i.quantity ?? ''),
-            rolls_count: String(i.rolls_count ?? '1'),
+            rolls_count: String(i.rolls_count ?? ''),
             price: String(i.price ?? i.unit_price ?? '')
           }))
         : [{ ...EMPTY_ITEM }];
@@ -261,7 +272,7 @@ const SalesPage = () => {
         items: items.map(item => ({
           inventory_id: item.inventory_id,
           weight: Number(item.weight),
-          rolls_count: Number(item.rolls_count || 1),
+          rolls_count: Number(item.rolls_count || 0),
           price: Number(item.price),
           quantity: Number(item.weight),
           unit_price: Number(item.price)
@@ -502,7 +513,7 @@ const SalesPage = () => {
                     <td style={{ padding: '8px 12px', color: 'var(--text-muted)' }}>{idx + 1}</td>
                     <td style={{ padding: '8px 12px', fontWeight: 600 }}>{item.product_name || '-'}</td>
                     <td style={{ padding: '8px 12px', fontWeight: 600, color: 'var(--primary)' }}>{Number(item.weight ?? item.quantity).toFixed(3)} كج</td>
-                    <td style={{ padding: '8px 12px', fontWeight: 600 }}>{item.rolls_count ?? 1}</td>
+                    <td style={{ padding: '8px 12px', fontWeight: 600 }}>{Number(item.rolls_count) > 0 ? item.rolls_count : '-'}</td>
                     <td style={{ padding: '8px 12px' }}>{Number(item.price ?? item.unit_price).toFixed(2)} ج.م</td>
                     <td style={{ padding: '8px 12px', fontWeight: 700, color: 'var(--success)' }}>{Number(item.total).toFixed(2)} ج.م</td>
                   </tr>
@@ -807,15 +818,15 @@ const SalesPage = () => {
                         />
                       </div>
                       <div style={{ flex: '1', minWidth: '80px' }}>
-                        <label className="form-label" style={{ fontSize: '0.8rem' }}>عدد اللفات *</label>
+                        <label className="form-label" style={{ fontSize: '0.8rem' }}>عدد اللفات (اختياري)</label>
                         <input
                           type="number"
                           step="1"
-                          min="1"
+                          min="0"
                           className="form-input"
                           value={item.rolls_count}
                           onChange={(e) => handleItemChange(index, 'rolls_count', e.target.value)}
-                          placeholder="اللفات"
+                          placeholder="اللفات (اختياري)"
                         />
                       </div>
                       <div style={{ flex: '1', minWidth: '90px' }}>

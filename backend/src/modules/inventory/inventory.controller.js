@@ -108,9 +108,47 @@ const getInventory = async (req, res, next) => {
     `;
     const summaryResult = await pool.query(summaryQuery, countParams);
 
+    // Query sections available weight for this branch
+    let sectionsAvailableWeight = 0;
+    let sectionsTotalWeight = 0;
+    let sectionsIssuedWeight = 0;
+    try {
+      const secSummaryRes = await pool.query(`
+        SELECT
+          COALESCE(SUM(total_weight), 0) AS total_sections_weight,
+          COALESCE(SUM(issued_weight), 0) AS total_sections_issued,
+          COALESCE(SUM(GREATEST(0, total_weight - issued_weight)), 0) AS total_sections_available
+        FROM inventory_sections
+        WHERE branch_id = $1 AND is_active = true
+      `, [branch_id]);
+      if (secSummaryRes.rows.length > 0) {
+        sectionsAvailableWeight = Number(secSummaryRes.rows[0].total_sections_available || 0);
+        sectionsTotalWeight = Number(secSummaryRes.rows[0].total_sections_weight || 0);
+        sectionsIssuedWeight = Number(secSummaryRes.rows[0].total_sections_issued || 0);
+      }
+    } catch (e) {
+      console.error('Error fetching sections summary:', e);
+    }
+
+    const itemsRemainingWeight = Number(summaryResult.rows[0]?.total_remaining_weight || 0);
+    const combinedRemainingWeight = itemsRemainingWeight + sectionsAvailableWeight;
+    const combinedWeightIn = Number(summaryResult.rows[0]?.total_weight_in || 0) + sectionsTotalWeight;
+    const combinedIssued = Number(summaryResult.rows[0]?.total_issued || 0) + sectionsIssuedWeight;
+
+    const summaryData = {
+      ...summaryResult.rows[0],
+      items_remaining_weight: itemsRemainingWeight,
+      sections_available_weight: sectionsAvailableWeight,
+      sections_total_weight: sectionsTotalWeight,
+      sections_issued_weight: sectionsIssuedWeight,
+      total_remaining_weight: combinedRemainingWeight,
+      total_weight_in: combinedWeightIn,
+      total_issued: combinedIssued,
+    };
+
     return sendSuccess(res, {
       inventory: result.rows,
-      summary: summaryResult.rows[0],
+      summary: summaryData,
       total: parseInt(countResult.rows[0].count),
       page: parseInt(page),
       limit: parseInt(limit)

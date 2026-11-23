@@ -1,10 +1,138 @@
 const pool = require('../../config/db');
 const { sendSuccess, sendError, paginate, getEffectiveBranchId } = require('../../utils/helpers');
 
+// ─── Helper: Sync Jard with Inventory ────────────────────────────────────────
+const syncJardWithInventory = async (branch_id) => {
+  if (!branch_id) return { synced: 0 };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Fetch grouped inventory products for this branch
+    const invRes = await client.query(`
+      SELECT
+        TRIM(COALESCE(company, '')) AS company,
+        TRIM(product) AS product,
+        section_id,
+        COALESCE(SUM(count), 0)::int AS total_rolls,
+        COALESCE(SUM(issued_rolls), 0)::int AS total_issued_rolls,
+        COALESCE(SUM(weight_quantity), 0)::numeric AS total_weight,
+        COALESCE(SUM(issued_quantity), 0)::numeric AS total_issued_weight,
+        MIN(date) AS earliest_date
+      FROM inventory
+      WHERE branch_id = $1 AND product IS NOT NULL AND TRIM(product) != ''
+      GROUP BY TRIM(COALESCE(company, '')), TRIM(product), section_id
+    `, [branch_id]);
+
+    let syncedCount = 0;
+
+    for (const inv of invRes.rows) {
+      const companyVal = inv.company || 'عام';
+      const productVal = inv.product;
+      const secId = inv.section_id || null;
+
+      // Check if this item already exists in jard
+      const existingJard = await client.query(`
+        SELECT id, opening_rolls, opening_weight, incoming_rolls, incoming_weight, outgoing_rolls, outgoing_weight, section_id
+        FROM jard
+        WHERE branch_id = $1
+          AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM($2))
+          AND LOWER(TRIM(product)) = LOWER(TRIM($3))
+          AND (
+            ($4::int IS NULL AND section_id IS NULL)
+            OR section_id = $4::int
+          )
+        ORDER BY id ASC
+        LIMIT 1
+      `, [branch_id, companyVal, productVal, secId]);
+
+      if (existingJard.rows.length === 0) {
+        // Not in jard yet -> insert
+        await client.query(`
+          INSERT INTO jard (
+            branch_id, date, company, section_id, product,
+            opening_rolls, opening_weight,
+            incoming_rolls, incoming_weight,
+            outgoing_rolls, outgoing_weight,
+            notes
+          ) VALUES (
+            $1, COALESCE($2, CURRENT_DATE), $3, $4, $5,
+            $6, $7,
+            0, 0,
+            $8, $9,
+            'مزامنة تلقائية من المخزن'
+          )
+        `, [
+          branch_id,
+          inv.earliest_date,
+          companyVal,
+          secId,
+          productVal,
+          inv.total_rolls,
+          inv.total_weight,
+          inv.total_issued_rolls,
+          inv.total_issued_weight
+        ]);
+        syncedCount++;
+      } else {
+        const curJ = existingJard.rows[0];
+        let needsUpdate = false;
+        let newSecId = curJ.section_id;
+        if (!curJ.section_id && secId) {
+          newSecId = secId;
+          needsUpdate = true;
+        }
+
+        const jardTotalRolls = Number(curJ.opening_rolls || 0) + Number(curJ.incoming_rolls || 0);
+        let newIncomingRolls = Number(curJ.incoming_rolls || 0);
+        let newIncomingWeight = Number(curJ.incoming_weight || 0);
+        if (inv.total_rolls > jardTotalRolls) {
+          const deltaRolls = inv.total_rolls - jardTotalRolls;
+          newIncomingRolls += deltaRolls;
+          needsUpdate = true;
+        }
+
+        const jardTotalIssued = Number(curJ.outgoing_rolls || 0);
+        let newOutgoingRolls = Number(curJ.outgoing_rolls || 0);
+        if (inv.total_issued_rolls > jardTotalIssued) {
+          const deltaIssued = inv.total_issued_rolls - jardTotalIssued;
+          newOutgoingRolls += deltaIssued;
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await client.query(`
+            UPDATE jard
+            SET section_id = $1,
+                incoming_rolls = $2,
+                incoming_weight = $3,
+                outgoing_rolls = $4,
+                updated_at = NOW()
+            WHERE id = $5
+          `, [newSecId, newIncomingRolls, newIncomingWeight, newOutgoingRolls, curJ.id]);
+          syncedCount++;
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+    return { synced: syncedCount };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error syncing Jard with inventory:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
 // ─── GET Jard Items List with Filters & Summary ─────────────────────────────
 const getJardList = async (req, res, next) => {
   try {
     const branch_id = getEffectiveBranchId(req);
+
+    // Auto-sync items from inventory to jard
+    await syncJardWithInventory(branch_id).catch(e => console.error('Auto sync error:', e));
     const {
       page = 1,
       limit = 25,
@@ -206,6 +334,39 @@ const addJardItem = async (req, res, next) => {
       notes?.trim() || null
     ]);
 
+    // Also reflect into inventory so available rolls in inventory reflects this new item
+    if (numOpeningRolls > 0 || numOpeningWeight > 0) {
+      try {
+        const matchInv = await pool.query(`
+          SELECT id FROM inventory
+          WHERE branch_id = $1
+            AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM(COALESCE($2, '')))
+            AND LOWER(TRIM(product)) = LOWER(TRIM($3))
+          ORDER BY (section_id = $4) DESC, id DESC
+          LIMIT 1
+        `, [branch_id, company.trim(), product.trim(), secId]);
+
+        if (matchInv.rows.length > 0) {
+          await pool.query(`
+            UPDATE inventory
+            SET count = COALESCE(count, 0) + $1,
+                weight_quantity = COALESCE(weight_quantity, 0) + $2,
+                updated_at = NOW()
+            WHERE id = $3
+          `, [numOpeningRolls, numOpeningWeight, matchInv.rows[0].id]);
+        } else {
+          await pool.query(`
+            INSERT INTO inventory (
+              branch_id, date, company, product, section_id,
+              count, issued_rolls, weight_quantity, issued_quantity, notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 0, 'صنف جديد من موديول الجرد')
+          `, [branch_id, date, company.trim(), product.trim(), secId, numOpeningRolls, numOpeningWeight]);
+        }
+      } catch (invErr) {
+        console.error('Error reflecting new Jard item to inventory:', invErr);
+      }
+    }
+
     return sendSuccess(res, insertRes.rows[0], 201, 'تمت إضافة صنف الجرد ورصيد أول المدة بنجاح');
   } catch (err) {
     next(err);
@@ -383,6 +544,37 @@ const addMovement = async (req, res, next) => {
           updated_at = NOW()
         WHERE id = $3 AND branch_id = $4
       `, [numRolls, numWeight, jard_id, branch_id]);
+
+      // Reflect incoming in inventory
+      try {
+        const matchInv = await client.query(`
+          SELECT id FROM inventory
+          WHERE branch_id = $1
+            AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM(COALESCE($2, '')))
+            AND LOWER(TRIM(product)) = LOWER(TRIM($3))
+          ORDER BY (section_id = $4) DESC, id DESC
+          LIMIT 1
+        `, [branch_id, jardItem.company, jardItem.product, jardItem.section_id]);
+
+        if (matchInv.rows.length > 0) {
+          await client.query(`
+            UPDATE inventory
+            SET count = COALESCE(count, 0) + $1,
+                weight_quantity = COALESCE(weight_quantity, 0) + $2,
+                updated_at = NOW()
+            WHERE id = $3
+          `, [numRolls, numWeight, matchInv.rows[0].id]);
+        } else {
+          await client.query(`
+            INSERT INTO inventory (
+              branch_id, date, company, product, section_id,
+              count, issued_rolls, weight_quantity, issued_quantity, notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 0, 'وارد من حركة جرد')
+          `, [branch_id, date, jardItem.company, jardItem.product, jardItem.section_id, numRolls, numWeight]);
+        }
+      } catch (invErr) {
+        console.error('Error reflecting incoming to inventory:', invErr);
+      }
     } else {
       await client.query(`
         UPDATE jard
@@ -392,6 +584,37 @@ const addMovement = async (req, res, next) => {
           updated_at = NOW()
         WHERE id = $3 AND branch_id = $4
       `, [numRolls, numWeight, jard_id, branch_id]);
+
+      // Reflect outgoing in inventory
+      try {
+        const matchInv = await client.query(`
+          SELECT id FROM inventory
+          WHERE branch_id = $1
+            AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM(COALESCE($2, '')))
+            AND LOWER(TRIM(product)) = LOWER(TRIM($3))
+          ORDER BY (section_id = $4) DESC, id DESC
+          LIMIT 1
+        `, [branch_id, jardItem.company, jardItem.product, jardItem.section_id]);
+
+        if (matchInv.rows.length > 0) {
+          await client.query(`
+            UPDATE inventory
+            SET issued_rolls = COALESCE(issued_rolls, 0) + $1,
+                issued_quantity = COALESCE(issued_quantity, 0) + $2,
+                updated_at = NOW()
+            WHERE id = $3
+          `, [numRolls, numWeight, matchInv.rows[0].id]);
+        } else {
+          await client.query(`
+            INSERT INTO inventory (
+              branch_id, date, company, product, section_id,
+              count, issued_rolls, weight_quantity, issued_quantity, notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $7, 'صادر من حركة جرد')
+          `, [branch_id, date, jardItem.company, jardItem.product, jardItem.section_id, numRolls, numWeight]);
+        }
+      } catch (invErr) {
+        console.error('Error reflecting outgoing to inventory:', invErr);
+      }
     }
 
     await client.query('COMMIT');
@@ -439,6 +662,13 @@ const deleteMovement = async (req, res, next) => {
       return sendError(res, 'لا يمكن حذف حركة مرتبطة بمبيعات مباشرة من هنا، يجب إلغاء الفاتورة من سجل المبيعات');
     }
 
+    // Fetch parent jard item to identify product & company for inventory reversal
+    const parentJardRes = await client.query(
+      `SELECT company, product, section_id FROM jard WHERE id = $1 AND branch_id = $2`,
+      [mov.jard_id, branch_id]
+    );
+    const parentJard = parentJardRes.rows[0];
+
     // Revert from parent
     if (mov.type === 'incoming') {
       await client.query(`
@@ -449,6 +679,23 @@ const deleteMovement = async (req, res, next) => {
           updated_at = NOW()
         WHERE id = $3 AND branch_id = $4
       `, [Number(mov.rolls), Number(mov.weight), mov.jard_id, branch_id]);
+
+      if (parentJard) {
+        await client.query(`
+          UPDATE inventory
+          SET count = GREATEST(0, COALESCE(count, 0) - $1),
+              weight_quantity = GREATEST(0, COALESCE(weight_quantity, 0) - $2),
+              updated_at = NOW()
+          WHERE id = (
+            SELECT id FROM inventory
+            WHERE branch_id = $3
+              AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM(COALESCE($4, '')))
+              AND LOWER(TRIM(product)) = LOWER(TRIM($5))
+            ORDER BY (section_id = $6) DESC, id DESC
+            LIMIT 1
+          )
+        `, [Number(mov.rolls), Number(mov.weight), branch_id, parentJard.company, parentJard.product, parentJard.section_id]);
+      }
     } else {
       await client.query(`
         UPDATE jard
@@ -458,6 +705,23 @@ const deleteMovement = async (req, res, next) => {
           updated_at = NOW()
         WHERE id = $3 AND branch_id = $4
       `, [Number(mov.rolls), Number(mov.weight), mov.jard_id, branch_id]);
+
+      if (parentJard) {
+        await client.query(`
+          UPDATE inventory
+          SET issued_rolls = GREATEST(0, COALESCE(issued_rolls, 0) - $1),
+              issued_quantity = GREATEST(0, COALESCE(issued_quantity, 0) - $2),
+              updated_at = NOW()
+          WHERE id = (
+            SELECT id FROM inventory
+            WHERE branch_id = $3
+              AND LOWER(TRIM(COALESCE(company, ''))) = LOWER(TRIM(COALESCE($4, '')))
+              AND LOWER(TRIM(product)) = LOWER(TRIM($5))
+            ORDER BY (section_id = $6) DESC, id DESC
+            LIMIT 1
+          )
+        `, [Number(mov.rolls), Number(mov.weight), branch_id, parentJard.company, parentJard.product, parentJard.section_id]);
+      }
     }
 
     await client.query(`DELETE FROM jard_movements WHERE id = $1`, [id]);
@@ -476,6 +740,7 @@ const deleteMovement = async (req, res, next) => {
 const getJardForPOS = async (req, res, next) => {
   try {
     const branch_id = getEffectiveBranchId(req);
+    await syncJardWithInventory(branch_id).catch(e => console.error('Auto sync error:', e));
 
     const result = await pool.query(`
       SELECT
@@ -490,10 +755,21 @@ const getJardForPOS = async (req, res, next) => {
       FROM jard j
       LEFT JOIN inventory_sections sec ON sec.id = j.section_id
       WHERE j.branch_id = $1 AND j.available_rolls > 0
-      ORDER BY j.company ASC, j.product ASC
+      ORDER BY sec.name ASC NULLS LAST, j.company ASC, j.product ASC
     `, [branch_id]);
 
     return sendSuccess(res, result.rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── POST Manual Sync With Inventory ────────────────────────────────────────
+const syncWithInventory = async (req, res, next) => {
+  try {
+    const branch_id = getEffectiveBranchId(req);
+    const result = await syncJardWithInventory(branch_id);
+    return sendSuccess(res, result, 200, `تمت مزامنة أصناف المخزن مع الجرد بنجاح (${result.synced} صنف محدث/جديد)`);
   } catch (err) {
     next(err);
   }
@@ -508,4 +784,6 @@ module.exports = {
   addMovement,
   deleteMovement,
   getJardForPOS,
+  syncWithInventory,
+  syncJardWithInventory,
 };

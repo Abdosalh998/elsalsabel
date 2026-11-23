@@ -77,6 +77,7 @@ const JardPage = () => {
 
   // Modal 5: Print Report
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Load sections on mount
   useEffect(() => {
@@ -257,6 +258,20 @@ const JardPage = () => {
       toast.error(err.response?.data?.message || 'فشل حذف الصنف');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  // Sync Inventory with Jard
+  const handleSyncInventory = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await jardService.syncWithInventory();
+      toast.success(res.message || 'تمت مزامنة أصناف المخزن مع الجرد بنجاح');
+      fetchJardList();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'فشلت المزامنة مع المخزن');
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -520,6 +535,16 @@ const JardPage = () => {
             title="تحديث البيانات"
           >
             <RefreshCw size={18} />
+          </button>
+
+          <button
+            className="jard-btn outline-btn"
+            onClick={handleSyncInventory}
+            disabled={isSyncing}
+            title="مزامنة تلقائية للأصناف واللفات من المخزن"
+          >
+            <RefreshCw size={18} className={isSyncing ? 'spin' : ''} />
+            <span>{isSyncing ? 'جاري المزامنة...' : 'مزامنة مع المخزن'}</span>
           </button>
 
           <button
